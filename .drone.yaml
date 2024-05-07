@@ -1,0 +1,36 @@
+kind: pipeline
+type: docker
+name: build
+
+trigger:
+  branch:
+    - main
+    - feature/*
+  event:
+    - push
+    - pull_request
+
+steps:
+- name: build-deploy
+  image: plugins/docker
+  environment:
+      RUN_MIGRATION:
+        from_secret: run_migration
+  settings:
+    registry:
+      from_secret: docker_registry_host
+    build_args_from_env:
+      - DRONE
+      - DRONE_TAG
+      - DRONE_COMMIT
+      - DRONE_BRANCH
+      - RUN_MIGRATION
+    repo:
+      from_secret: docker_repository
+    username:
+      from_secret: docker_registry_username
+    password:
+      from_secret: docker_registry_password
+    tags:
+      - latest
+    insecure: true
