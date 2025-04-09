@@ -22,7 +22,7 @@ jobs:
         run: |
           go test -race -v -timeout=100s -covermode=atomic -coverprofile=$GITHUB_WORKSPACE/profile.cov_tmp ./...
           cat $GITHUB_WORKSPACE/profile.cov_tmp | grep -v "mocks" | grep -v "_mock" > $GITHUB_WORKSPACE/profile.cov
-        working-directory: app
+        working-directory: .
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
