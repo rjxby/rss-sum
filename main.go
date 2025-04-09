@@ -99,7 +99,7 @@ func runServer(ctx context.Context, wg *sync.WaitGroup) {
 		log.Fatalf("[ERROR] failed to create data store: %v", err)
 	}
 
-	srv := server.Server{
+	srv := &server.Server{
 		Blogger: blogger.New(dataStore),
 		Version: revision,
 	}

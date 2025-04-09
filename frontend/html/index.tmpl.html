@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RSS Sum</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@1.9.9" integrity="sha384-QFjmbokDn2DjBjq+fM+8LUIVrAgqcNW2s0PjAxHETgRn9l4fvX31ZxDxvwQnyMOX" crossorigin="anonymous"></script>
+    <style>
+        :root {
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --primary-focus: rgba(59, 130, 246, 0.25);
+            --primary-inverse: #FFF;
+            --card-background: #1e293b;
+            --card-border: #334155;
+            --card-text: #e2e8f0;
+            --heading-color: #f8fafc;
+            --body-background: #0f172a;
+        }
+
+        body {
+            background-color: var(--body-background);
+            color: var(--card-text);
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+
+        .container {
+            padding: 2rem 1rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        header {
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 1rem;
+        }
+
+        h1 {
+            color: var(--heading-color);
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .card {
+            margin-bottom: 1.5rem;
+            padding: 1.5rem;
+            border-radius: 8px;
+            background-color: var(--card-background);
+            border: 1px solid var(--card-border);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+
+        .card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        .card-title {
+            color: var(--heading-color);
+            margin-top: 0;
+            margin-bottom: 0.75rem;
+            font-weight: 600;
+        }
+
+        .card-text {
+            margin-bottom: 1rem;
+            line-height: 1.6;
+        }
+
+        .card-link {
+            display: inline-block;
+            margin-top: 0.5rem;
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.15s ease-in-out;
+        }
+
+        .card-link:hover {
+            color: var(--primary-hover);
+            text-decoration: underline;
+        }
+
+        footer {
+            margin-top: 3rem;
+            text-align: center;
+            color: #64748b;
+            font-size: 0.875rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--card-border);
+        }
+
+        /* Loading spinner */
+        [aria-busy="true"]::before {
+            border-color: var(--primary);
+            border-right-color: transparent;
+        }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>RSS Sum</h1>
+        </header>
+
+        <section id="posts-container"
+            hx-get="/api/v1/posts?page=1&pageSize=10"
+            hx-trigger="load"
+            hx-swap="innerHTML">
+            <article aria-busy="true">Loading articles...</article>
+        </section>
+
+        <footer>
+            <p>RSS Sum Service - {{ .Version }}</p>
+        </footer>
+    </main>
+</body>
+</html>

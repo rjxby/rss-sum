@@ -29,7 +29,7 @@ type Blogger interface {
 
 // Assistent defines an interface to work with text
 type Assistent interface {
-	SummirizeText(text string) (string, error)
+	SummarizeText(text string) (string, error)
 }
 
 // Hasher defines an interface to hash data
@@ -115,12 +115,34 @@ func (w Worker) runFetchPosts() error {
 
 	fp := gofeed.NewParser()
 
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(w.Settings.WorkerTimeoutInSeconds)*time.Second)
+	defer cancel()
+
+	var finalErr error
+
 	// Fetch fresh posts from all feeds
-	freshPosts := []*store.PostV1{}
 	for _, feedURL := range w.Settings.RSSFeedsURLs {
-		feed, err := fp.ParseURL(feedURL)
+		var feed *gofeed.Feed
+		var err error
+
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				log.Printf("[INFO] retry %d fetching feed %s", attempt, feedURL)
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
+
+			feed, err = fp.ParseURLWithContext(feedURL, ctx)
+			if err == nil {
+				break
+			}
+			log.Printf("[WARN] attempt %d to fetch feed %s failed: %v", attempt+1, feedURL, err)
+		}
+
 		if err != nil {
-			return fmt.Errorf("failed to parse feed (%v): %v", feedURL, err)
+			log.Printf("[ERROR] failed to parse feed (%v) after retries: %v", feedURL, err)
+			finalErr = fmt.Errorf("failed to parse feed: %v", err)
+			continue
 		}
 
 		if len(feed.Items) == 0 {
@@ -129,7 +151,8 @@ func (w Worker) runFetchPosts() error {
 		}
 
 		partitionKey := w.Hasher.HashString(feedURL)
-		for _, item := range feed.Items[:w.Settings.RSSFeedLimit] {
+		freshPosts := []*store.PostV1{}
+		for _, item := range feed.Items[:min(len(feed.Items), w.Settings.RSSFeedLimit)] {
 			freshPosts = append(freshPosts, &store.PostV1{
 				ID:           item.GUID,
 				PartitionKey: partitionKey,
@@ -143,35 +166,59 @@ func (w Worker) runFetchPosts() error {
 		// Load stored posts from the database
 		storedPostsResult, err := w.Blogger.GetPosts(1, w.Settings.RSSFeedLimit, partitionKey)
 		if err != nil {
-			return fmt.Errorf("failed to load existing posts: %v", err)
+			log.Printf("[ERROR] failed to load existing posts for feed %s: %v", feedURL, err)
+			finalErr = fmt.Errorf("failed to load existing posts: %v", err)
+			continue
 		}
 		storedPosts := storedPostsResult.Posts
 
 		postsToCreate := w.distinctNewPosts(freshPosts, storedPosts)
+
+		var successfulPosts []*store.PostV1
+
 		for _, postToCreate := range postsToCreate {
-			summirizedText, err := w.Assistent.SummirizeText(postToCreate.Text)
-			if err != nil {
-				return fmt.Errorf("failed to sumirize post (%v): %v", postToCreate.SourceURL, err)
+			var summirizedText string
+			var summarizeErr error
+
+			for attempt := 0; attempt < 3; attempt++ {
+				if attempt > 0 {
+					log.Printf("[INFO] retry %d summarizing post %s", attempt, postToCreate.SourceURL)
+					time.Sleep(time.Duration(attempt) * time.Second)
+				}
+
+				summirizedText, summarizeErr = w.Assistent.SummarizeText(postToCreate.Text)
+				if summarizeErr == nil {
+					break
+				}
+				log.Printf("[WARN] attempt %d to summarize post %s failed: %v",
+					attempt+1, postToCreate.SourceURL, err)
+			}
+
+			if summarizeErr != nil {
+				log.Printf("[ERROR] failed to summarize post (%v) after retries: %v",
+					postToCreate.SourceURL, err)
+				continue
 			}
 
 			log.Printf("[INFO] runFetchPosts processed post: {%s}", postToCreate.SourceURL)
-
 			postToCreate.Text = summirizedText
+			successfulPosts = append(successfulPosts, postToCreate)
 		}
 
-		if len(postsToCreate) > 0 {
-			_, err := w.Blogger.SavePostsBulk(postsToCreate)
+		if len(successfulPosts) > 0 {
+			_, err := w.Blogger.SavePostsBulk(successfulPosts)
 			if err != nil {
-				return fmt.Errorf("failed to save posts %v", err)
+				log.Printf("[ERROR] failed to save posts for feed %s: %v", feedURL, err)
+				finalErr = fmt.Errorf("failed to save posts: %v", err)
+				continue
 			}
 
-			log.Printf("[INFO] posts were updated")
+			log.Printf("[INFO] posts were updated for feed %s", feedURL)
 		}
 	}
 
 	log.Printf("[INFO] runFetchPosts finished at {%v}", time.Now())
-
-	return nil
+	return finalErr
 }
 
 func (w Worker) distinctNewPosts(freshPosts []*store.PostV1, storedPosts []*store.PostV1) []*store.PostV1 {

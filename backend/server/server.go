@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"strconv"
@@ -16,8 +18,9 @@ import (
 )
 
 type Server struct {
-	Blogger Blogger
-	Version string
+	Blogger       Blogger
+	Version       string
+	templateCache map[string]*template.Template
 }
 
 type Blogger interface {
@@ -27,6 +30,12 @@ type Blogger interface {
 // Run the lisener and request's router, activate rest server
 func (s Server) Run(ctx context.Context) error {
 	log.Printf("[INFO] activate rest server")
+
+	templateCache, err := NewTemplateCache()
+	if err != nil {
+		return fmt.Errorf("[ERROR] failed to load templates: %v", err)
+	}
+	s.templateCache = templateCache
 
 	httpServer := &http.Server{
 		Addr:              ":8080",
@@ -58,9 +67,18 @@ func (s Server) routes() chi.Router {
 	router.Use(middleware.Throttle(1000), middleware.Timeout(60*time.Second))
 	router.Use(tollbooth_chi.LimitHandler(tollbooth.NewLimiter(10, nil)))
 
+	router.Get("/", s.indexCtrl)
+
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Use(Logger(log.Default()))
-		r.Get("/posts", s.getPostsCtrl)
+		r.Get("/posts", func(w http.ResponseWriter, r *http.Request) {
+			// check if this is an HTMX request
+			if r.Header.Get("HX-Request") == "true" {
+				s.getPostsHtmxCtrl(w, r)
+			} else {
+				s.getPostsCtrl(w, r)
+			}
+		})
 	})
 
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {

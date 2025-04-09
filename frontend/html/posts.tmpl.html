@@ -1,0 +1,18 @@
+{{ with .View }}
+{{ range .Posts }}
+<article class="card">
+    <h3 class="card-title">{{ .Title }}</h3>
+    <p class="card-text">{{ .Text }}</p>
+    <a class="card-link" href="{{ .SourceURL }}" target="_blank">Read original</a>
+</article>
+{{ end }}
+
+{{ if .HasMore }}
+<div id="pagination-sentinel"
+    hx-get="/api/v1/posts?page={{ .NextPage }}&pageSize={{ .PageSize }}"
+    hx-trigger="revealed"
+    hx-swap="beforeend"
+    hx-target="#posts-container">
+</div>
+{{ end }}
+{{ end }}

@@ -17,6 +17,7 @@ type PostsResultsJSON struct {
 
 type PostJSON struct {
 	ID        string `json:"id,omitempty"`
+	Title     string `json:"title,omitempty"`
 	Text      string `json:"text,omitempty"`
 	SourceURL string `json:"sourceUrl,omitempty"`
 }
@@ -56,6 +57,7 @@ func mapToJSON(posts *store.PaginationPostsResult) *PostsResultsJSON {
 	for _, post := range posts.Posts {
 		mappedPosts = append(mappedPosts, PostJSON{
 			ID:        post.ID,
+			Title:     post.Title,
 			Text:      post.Text,
 			SourceURL: post.SourceURL,
 		})
