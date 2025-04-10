@@ -73,10 +73,6 @@ func (s *Server) render(w http.ResponseWriter, status int, page, tmplName string
 
 	buf := new(bytes.Buffer)
 
-	if tmplName == "" {
-		tmplName = baseTmpl
-	}
-
 	err := ts.Execute(buf, data)
 	if err != nil {
 		log.Printf("[ERROR] %v", err)

@@ -87,7 +87,9 @@ func TestSummarizeText(t *testing.T) {
 		resp := ollamaResponse{Response: "This is a test summary."}
 		respJSON, _ := json.Marshal(resp)
 		w.WriteHeader(http.StatusOK)
-		w.Write(respJSON)
+		if _, err := w.Write(respJSON); err != nil {
+			t.Fatalf("Failed to write response: %v", err)
+		}
 	}))
 	defer ts.Close()
 
