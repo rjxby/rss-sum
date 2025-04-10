@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -148,7 +149,11 @@ func (c *ollamaClient) streamData(ctx context.Context, method, path string, data
 	if err != nil {
 		return fmt.Errorf("failed to perform request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("[WARN] failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ollama API returned non-200 status code: %d", resp.StatusCode)
