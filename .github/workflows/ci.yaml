@@ -10,13 +10,13 @@ jobs:
 
     steps:
       - name: set up go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.24.2"
         id: go
 
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: build and test
         run: |
@@ -24,7 +24,7 @@ jobs:
           cat $GITHUB_WORKSPACE/profile.cov_tmp | grep -v "mocks" | grep -v "_mock" > $GITHUB_WORKSPACE/profile.cov
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v8
         with:
           version: v2.0.2
 
