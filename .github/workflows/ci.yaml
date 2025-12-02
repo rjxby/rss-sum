@@ -24,9 +24,9 @@ jobs:
           cat $GITHUB_WORKSPACE/profile.cov_tmp | grep -v "mocks" | grep -v "_mock" > $GITHUB_WORKSPACE/profile.cov
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.0.2
+          version: v2.6.2
 
       - name: submit coverage
         run: |
