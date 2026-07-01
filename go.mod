@@ -3,7 +3,7 @@ module github.com/rjxby/rss-sum
 go 1.24.2
 
 require (
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-chi/render v1.0.3
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/stretchr/testify v1.11.1
@@ -33,5 +33,5 @@ require (
 	github.com/didip/tollbooth/v7 v7.0.2
 	github.com/didip/tollbooth_chi v0.0.0-20220719025231-d662a7f6928f
 	gorm.io/driver/sqlite v1.6.0
-	gorm.io/gorm v1.30.0
+	gorm.io/gorm v1.31.2
 )
