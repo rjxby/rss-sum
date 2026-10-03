@@ -7,20 +7,9 @@ RSS Sum is a single Go process with two main runtime paths:
 
 `main.go` optionally runs database migrations, then starts both paths with a shared cancellation context. The process exits after receiving `SIGINT` or `SIGTERM`.
 
-```mermaid
-flowchart LR
-    Feeds["RSS feeds"] --> Worker["backend/rss/worker"]
-    Worker --> Assistant["backend/assistant"]
-    Assistant --> Provider["Ollama or gen-proxy"]
-    Worker --> Blogger["backend/blogger"]
-    Server["backend/server"] --> Blogger
-    Blogger --> Store["backend/store"]
-    Store --> DB["SQLite"]
-    Server --> Frontend["embedded frontend"]
-    Browser["Browser or API client"] --> Server
-```
+The [runtime diagram in the README](../README.md#how-it-works) shows package interactions and the process boundary. The dependency diagram below shows which third-party components each package uses.
 
-## Runtime Flow
+## Runtime flow
 
 1. `main.go` loads the optional `.env` file, then parses top-level settings. See the [configuration contract](../README.md#configuration).
 2. If `RUN_MIGRATION=true`, `backend/store` runs GORM auto-migration.
@@ -28,14 +17,113 @@ flowchart LR
 4. When enabled, the RSS worker runs once immediately, then repeats after `WORKER_INTERVAL_IN_SECONDS`.
 5. Shutdown cancels both goroutines and waits for them to finish.
 
-## Core Packages
+## Core packages
 
+- `backend/config` loads the optional `.env` file and parses environment settings for startup and package configuration.
 - `backend/rss/worker` validates configured feed URLs, fetches RSS items with `gofeed`, hashes feed and post identifiers, skips known posts, and retries feed and summary operations.
+- `backend/hasher` derives feed and post identifiers with the Go standard library's SHA-256 implementation.
 - `backend/assistant` selects an LLM provider from `LLM_PROVIDER`, builds a summary prompt, requests structured output, and extracts the `summary` field.
 - `backend/blogger` is the application service for listing and saving posts. It keeps persistence details out of the worker and server.
 - `backend/store` owns SQLite access through GORM. `PostV1` is the stored post model.
 - `backend/server` owns routes, middleware, request validation, JSON responses, HTML rendering, and static asset serving.
 - `frontend` embeds HTML templates and static assets into the Go binary.
+
+## External dependencies
+
+```mermaid
+flowchart LR
+    subgraph process["Inside the RSS Sum Go process"]
+        direction TB
+        subgraph owned["App code · maintained in this repository"]
+            direction LR
+            Config["backend/config"]
+            Worker["backend/rss/worker"]
+            Server["backend/server"]
+            Store["backend/store"]
+        end
+
+        subgraph libraries["External Go libraries · linked into the app"]
+            direction LR
+            Dotenv["godotenv<br/>.env parsing"]
+            Gofeed["gofeed<br/>Feed fetching + parsing"]
+            Chi["chi/v5<br/>Routing + middleware"]
+            Render["render<br/>JSON responses"]
+            Adapter["tollbooth_chi<br/>chi rate-limit adapter"]
+            Tollbooth["tollbooth/v7<br/>Rate limiting"]
+            Gorm["GORM<br/>Queries + migrations"]
+            Driver["gorm.io/driver/sqlite<br/>SQLite adapter"]
+            SQLite["go-sqlite3 · indirect<br/>SQLite engine via CGO"]
+        end
+
+        Config --> Dotenv
+        Worker --> Gofeed
+        Server --> Chi
+        Server --> Render
+        Server --> Adapter
+        Server --> Tollbooth
+        Adapter --> Tollbooth
+        Store --> Gorm
+        Store --> Driver
+        Driver --> SQLite
+    end
+
+    subgraph browser["In the browser"]
+        Frontend["Served frontend assets<br/>Custom CSS + JS"]
+        Htmx["External library · htmx<br/>HTML requests + swaps"]
+        Frontend -- "loads vendored script" --> Htmx
+    end
+
+    subgraph tests["In the test process only"]
+        Tests["Go tests"]
+        Testify["External library · testify<br/>Assertions + mocks"]
+        Tests --> Testify
+    end
+
+    Database[("Local SQLite file")]
+    SQLite -- "read / write" --> Database
+    Server -. "serve embedded assets" .-> Frontend
+
+    classDef app fill:#eef2ff,stroke:#6366a0,color:#1e2448,stroke-width:1.5px
+    classDef library fill:#fff7e6,stroke:#b77916,color:#754b0c,stroke-width:1.5px,stroke-dasharray:6 4
+    classDef outside fill:#ecfdf5,stroke:#16836b,color:#134e42,stroke-width:1.5px,stroke-dasharray:6 4
+    class Config,Worker,Server,Store,Frontend,Tests app
+    class Dotenv,Gofeed,Chi,Render,Adapter,Tollbooth,Gorm,Driver,SQLite,Htmx,Testify library
+    class Database outside
+    style process fill:#f8faff,stroke:#9ba8cf,stroke-width:2px
+    style owned fill:#f8faff,stroke:#c3cbe0
+    style libraries fill:#fffcf5,stroke:#d8b16a,stroke-dasharray:6 4
+    style browser fill:#f5fcf9,stroke:#90bbae,stroke-dasharray:6 4
+    style tests fill:#f8fafc,stroke:#94a3b8,stroke-dasharray:6 4
+    linkStyle default stroke:#64748b,stroke-width:1.5px
+```
+
+Solid purple boxes show app code; dashed amber boxes identify external libraries. External describes code ownership, not deployment. Go libraries and the SQLite engine execute inside the Go process. The database is a local file. The frontend package embeds htmx in the binary; the server delivers it to the browser, where it executes.
+
+The table covers every direct Go dependency in [go.mod](../go.mod), the SQLite implementation pulled in by its driver, and the vendored frontend library. [go.mod](../go.mod) also lists indirect modules, and [go.sum](../go.sum) records module checksums.
+
+| Dependency | Used by | Purpose | Runs in |
+| --- | --- | --- | --- |
+| `github.com/joho/godotenv` | `backend/config` | Parses the optional `.env` file. | Go process |
+| `github.com/mmcdole/gofeed` | `backend/rss/worker` | Fetches and parses feeds through the app's destination-validating HTTP transport. | Go process |
+| `github.com/go-chi/chi/v5` | `backend/server` | Routes HTTP requests and provides throttling and timeout middleware. | Go process |
+| `github.com/go-chi/render` | `backend/server` | Writes JSON responses and HTTP status codes. | Go process |
+| `github.com/didip/tollbooth/v7` | `backend/server` | Limits HTTP request rates. | Go process |
+| `github.com/didip/tollbooth_chi` | `backend/server` | Connects the rate limiter to chi middleware. | Go process |
+| `gorm.io/gorm` | `backend/store` | Maps post models to queries, transactions, and migrations. | Go process |
+| `gorm.io/driver/sqlite` | `backend/store` | Connects GORM to SQLite. | Go process |
+| `github.com/mattn/go-sqlite3`, indirect | SQLite driver | Provides the SQLite engine and Go bindings through CGO. | Go process |
+| htmx, vendored | `frontend/static/htmx.min.js` | Requests HTML fragments and swaps them into the article list. | Browser |
+| `github.com/stretchr/testify` | Go tests | Provides assertions and mocks. | Test process only |
+
+The assistant uses `net/http` and `encoding/json` from the Go standard library to call providers. It does not require a provider SDK. Templates, asset embedding, hashing, and cancellation also use the standard library. The frontend uses custom CSS and JavaScript alongside htmx; it has no frontend build step.
+
+## Feed to summary to reader
+
+1. The worker fetches each configured public feed, using item content or its description as the source text.
+2. It derives feed and post identifiers, reads recent stored IDs through blogger, and filters duplicate items.
+3. The assistant sends each new item's text to the configured LLM service. See the [provider output contract](../README.md#run-locally).
+4. The worker replaces the item's text with its summary and saves successful summaries through blogger and store. Failed summaries are not saved.
+5. The browser loads the embedded page and assets, then htmx requests posts. The server reads stored posts through blogger and store and returns HTML fragments. API clients receive JSON from the same route. See the [API contract](../README.md#api).
 
 ## Boundaries
 

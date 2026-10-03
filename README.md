@@ -7,6 +7,67 @@ RSS Sum is an AI-assisted feed reader built in Go. It watches RSS feeds, summari
 
 This project is designed to show practical backend engineering: safe external fetching, provider-based AI integration, SQLite persistence, server-rendered UI, and a small production-style CI setup.
 
+## How it works
+
+```mermaid
+flowchart TB
+    subgraph sources["Outside the app process"]
+        direction LR
+        Feeds["External source<br/>Public RSS feeds"]
+        Client["External client<br/>Browser or API client"]
+    end
+
+    subgraph app["RSS Sum · one Go process"]
+        direction TB
+        Main["main.go<br/>Startup + shutdown"]
+        Config["backend/config<br/>.env + environment settings"]
+        Worker["backend/rss/worker<br/>Fetch + filter + retry"]
+        Hasher["backend/hasher<br/>SHA-256 identifiers"]
+        Assistant["backend/assistant<br/>Prompt + structured summary"]
+        Server["backend/server<br/>Routes, middleware, HTML + JSON"]
+        Frontend["frontend<br/>Embedded HTML, CSS, JS + htmx"]
+        Blogger["backend/blogger<br/>Map + list + save posts"]
+        Store["backend/store<br/>GORM + SQLite access"]
+
+        Config -.-> Main
+        Main -. "start when enabled" .-> Worker
+        Main -. "start when enabled" .-> Server
+        Main -. "optional migration" .-> Store
+        Worker --> Hasher
+        Worker -- "summarize new items" --> Assistant
+        Worker -- "check IDs + save summaries" --> Blogger
+        Server -- "read posts" --> Blogger
+        Server -- "render + serve assets" --> Frontend
+        Blogger --> Store
+    end
+
+    subgraph providers["External LLM services · choose one"]
+        direction LR
+        Ollama["Ollama<br/>POST /api/generate"]
+        Proxy["gen-proxy<br/>POST /v1/responses"]
+    end
+
+    Database[("Local file outside the binary<br/>SQLite database")]
+    Feeds -- "feed items over HTTP / HTTPS" --> Worker
+    Client -- "GET / or /api/v1/posts" --> Server
+    Assistant -- "HTTP + structured JSON" --> Ollama
+    Assistant -- "HTTP + structured JSON" --> Proxy
+    Store -- "read / write" --> Database
+
+    classDef owned fill:#eef2ff,stroke:#6366a0,color:#1e2448,stroke-width:1.5px
+    classDef external fill:#ecfdf5,stroke:#16836b,color:#134e42,stroke-width:1.5px,stroke-dasharray:6 4
+    class Main,Config,Worker,Hasher,Assistant,Server,Frontend,Blogger,Store owned
+    class Feeds,Client,Ollama,Proxy,Database external
+    style app fill:#f8faff,stroke:#9ba8cf,stroke-width:2px
+    style sources fill:#f5fcf9,stroke:#90bbae,stroke-dasharray:6 4
+    style providers fill:#f5fcf9,stroke:#90bbae,stroke-dasharray:6 4
+    linkStyle default stroke:#64748b,stroke-width:1.5px
+```
+
+Solid purple boxes show app code. Dashed green boxes show components outside the app process. Arrow labels describe requests, data, or package access; dotted arrows show startup wiring. Ollama or gen-proxy runs as a separate service, even when hosted on the same machine. The app selects one provider.
+
+See the [architecture and dependency inventory](docs/architecture.md) for package responsibilities and library usage.
+
 ## Highlights
 
 - **AI summaries**: Generates concise summaries through Ollama or a gen-proxy Responses API endpoint.
@@ -72,6 +133,14 @@ Both providers are expected to return structured JSON in this shape:
 ```json
 {"summary":"..."}
 ```
+
+## Releases
+
+[GitHub Releases](https://github.com/rjxby/rss-sum/releases) provide archives for Linux AMD64 and macOS ARM64. Each archive contains the `rss-sum` executable, `README.md`, `LICENSE`, and `.env.example`. Templates and static assets are embedded in the executable.
+
+Extract the archive for your platform, copy `.env.example` to `.env`, configure your feeds and LLM provider as described in [Run locally](#run-locally), then run `./rss-sum`. Release binaries do not require Go or a C compiler. Linux binaries require glibc 2.35 or newer; macOS binaries require macOS 14 or newer.
+
+To verify a downloaded archive, download `SHA256SUMS` beside it and run `sha256sum --ignore-missing -c SHA256SUMS` on Linux, or `shasum -a 256 rss-sum_<tag>_darwin_arm64.tar.gz` on macOS and compare the result with `SHA256SUMS`.
 
 ## Configuration
 
@@ -147,13 +216,14 @@ GitHub Actions runs tests with race detection and coverage, then runs `govulnche
 
 ## UI libraries
 
-The frontend vendors [htmx 4.0.0](https://github.com/bigskysoftware/htmx/releases/tag/v4.0.0) and [Pico CSS 2.1.1](https://github.com/picocss/pico/releases/tag/v2.1.1) in `frontend/static`. Both assets come from their versioned npm release archives and are embedded in the Go binary. No CDN or frontend build step is required.
+The frontend vendors [htmx 4.0.0](https://github.com/bigskysoftware/htmx/releases/tag/v4.0.0) in `frontend/static/htmx.min.js`. The asset is embedded in the Go binary and served locally. No CDN or frontend build step is required. Styling and request status handling use the project's `app.css` and `app.js`.
 
-Pico theme overrides use the `--pico-` prefix. The `htmx-config` meta tag disables swaps for HTTP errors because the posts API returns JSON errors, preserving the current article list when a request fails.
+The `htmx-config` meta tag disables swaps for HTTP errors because the posts API returns JSON errors, preserving the current article list when a request fails.
 
 ## Project Docs
 
 - [Architecture](docs/architecture.md)
+- [Release process](docs/releasing.md)
 - [Agent instructions](AGENTS.md)
 
 ## License
