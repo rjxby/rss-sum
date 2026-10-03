@@ -1,16 +1,22 @@
 module github.com/rjxby/rss-sum
 
-go 1.24.2
+go 1.27.1
 
 require (
+	github.com/didip/tollbooth/v7 v7.0.2
+	github.com/didip/tollbooth_chi v0.0.0-20220719025231-d662a7f6928f
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-chi/render v1.0.3
+	github.com/joho/godotenv v1.5.1
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/stretchr/testify v1.11.1
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.30.0
 )
 
 require (
 	github.com/PuerkitoBio/goquery v1.9.1 // indirect
+	github.com/ajg/form v1.5.1 // indirect
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-pkgz/expirable-cache/v3 v3.0.0 // indirect
@@ -23,15 +29,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
-	golang.org/x/net v0.24.0 // indirect
-	golang.org/x/text v0.20.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-)
-
-require (
-	github.com/ajg/form v1.5.1 // indirect
-	github.com/didip/tollbooth/v7 v7.0.2
-	github.com/didip/tollbooth_chi v0.0.0-20220719025231-d662a7f6928f
-	gorm.io/driver/sqlite v1.6.0
-	gorm.io/gorm v1.30.0
 )

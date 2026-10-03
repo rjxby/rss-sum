@@ -4,15 +4,21 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"strconv"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/mmcdole/gofeed"
 
-	"github.com/rjxby/rss-sum/backend/store"
+	"github.com/rjxby/rss-sum/backend/blogger"
+	"github.com/rjxby/rss-sum/backend/config"
 )
+
+const maxRSSFeeds = 100
+
+var lookupIP = net.LookupIP
 
 type Settings struct {
 	RSSFeedsURLs            []string
@@ -21,79 +27,294 @@ type Settings struct {
 	WorkerTimeoutInSeconds  int
 }
 
-// Blogger defines an interface to save and load data
-type Blogger interface {
-	GetPosts(page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error)
-	SavePostsBulk(postsToSave []*store.PostV1) ([]*store.PostV1, error)
+type Feed struct {
+	Items []FeedItem
 }
 
-// Assistent defines an interface to work with text
-type Assistent interface {
-	SummarizeText(text string) (string, error)
+type FeedItem struct {
+	ID        string
+	SourceURL string
+	Title     string
+	Text      string
 }
 
-// Hasher defines an interface to hash data
+type FeedFetcher interface {
+	Fetch(ctx context.Context, feedURL string) (*Feed, error)
+}
+
+type Summarizer interface {
+	SummarizeText(ctx context.Context, text string) (string, error)
+}
+
+type PostService interface {
+	FindRecentPostIDs(partitionKey string, limit int) ([]string, error)
+	SavePosts(posts []blogger.Post) error
+}
+
 type Hasher interface {
 	HashString(text string) string
 }
 
+type Clock interface {
+	Now() time.Time
+}
+
+type Sleeper interface {
+	Sleep(ctx context.Context, duration time.Duration) error
+}
+
 type Worker struct {
-	Assistent Assistent
-	Blogger   Blogger
-	Hasher    Hasher
-	Settings  Settings
-	Version   string
+	Summarizer  Summarizer
+	PostService PostService
+	FeedFetcher FeedFetcher
+	Hasher      Hasher
+	Clock       Clock
+	Sleeper     Sleeper
+	Settings    Settings
+	Version     string
+}
+
+func (w Worker) withDefaults() Worker {
+	if w.FeedFetcher == nil {
+		w.FeedFetcher = gofeedFetcher{}
+	}
+	if w.Clock == nil {
+		w.Clock = realClock{}
+	}
+	if w.Sleeper == nil {
+		w.Sleeper = realSleeper{}
+	}
+	return w
+}
+
+type gofeedFetcher struct{}
+
+func (gofeedFetcher) Fetch(ctx context.Context, feedURL string) (*Feed, error) {
+	parser := gofeed.NewParser()
+	parser.Client = safeFeedHTTPClient()
+
+	parsedFeed, err := parser.ParseURLWithContext(feedURL, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	feed := &Feed{
+		Items: make([]FeedItem, 0, len(parsedFeed.Items)),
+	}
+	for _, item := range parsedFeed.Items {
+		feed.Items = append(feed.Items, mapFeedItem(item))
+	}
+
+	return feed, nil
+}
+
+func mapFeedItem(item *gofeed.Item) FeedItem {
+	sourceURL := strings.TrimSpace(item.Link)
+	text := strings.TrimSpace(item.Content)
+	if text == "" {
+		text = strings.TrimSpace(item.Description)
+	}
+
+	return FeedItem{
+		ID:        strings.TrimSpace(item.GUID),
+		SourceURL: sourceURL,
+		Title:     strings.TrimSpace(item.Title),
+		Text:      text,
+	}
+}
+
+func safeFeedHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Dial directly so safeDialContext validates the feed destination.
+	transport.Proxy = nil
+	transport.DialContext = safeDialContext
+
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if err := validateFeedURL(req.URL.String()); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+func safeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFeedHost(host); err != nil {
+		return nil, err
+	}
+
+	dialer := &net.Dialer{}
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return nil, fmt.Errorf("feed host %q is a blocked IP", host)
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("failed to resolve feed host %q: no IPs returned", host)
+	}
+
+	var lastErr error
+	for _, address := range addresses {
+		if isBlockedIP(address.IP) {
+			return nil, fmt.Errorf("feed host %q resolved to blocked IP %s", host, address.IP)
+		}
+
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+
+	return nil, lastErr
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time {
+	return time.Now()
+}
+
+type realSleeper struct{}
+
+func (realSleeper) Sleep(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func ParseSettings() (*Settings, error) {
-	settings := Settings{}
-
-	workerFeedsStr := os.Getenv("FEEDS")
-	if workerFeedsStr == "" {
-		return nil, fmt.Errorf("FEEDS environment variable is empty; nothing to subscribe to")
-	}
-	settings.RSSFeedsURLs = strings.Split(workerFeedsStr, ",")
-
-	if len(settings.RSSFeedsURLs) == 0 {
-		return nil, fmt.Errorf("failed to parse FEEDS environment variable")
-	}
-
-	workerTimeoutInSecondsStr := os.Getenv("WORKER_TIMEOUT_IN_SECONDS")
-	if workerTimeoutInSecondsStr == "" {
-		workerTimeoutInSecondsStr = "1800" // 1800s = 30 min
-	}
-	workerTimeoutInSeconds, err := strconv.Atoi(workerTimeoutInSecondsStr)
+	feeds, err := config.StringList(config.EnvFeeds, maxRSSFeeds)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse WORKER_TIMEOUT_IN_SECONDS environment variable: %v", err)
+		return nil, err
 	}
-	settings.WorkerTimeoutInSeconds = workerTimeoutInSeconds
+	if err := validateFeedURLs(feeds); err != nil {
+		return nil, err
+	}
 
-	workerIntervalInSecondsStr := os.Getenv("WORKER_INTERVAL_IN_SECONDS")
-	if workerIntervalInSecondsStr == "" {
-		workerIntervalInSecondsStr = "3600" // 3600s = 1 hour
-	}
-	workerIntervalInSeconds, err := strconv.Atoi(workerIntervalInSecondsStr)
+	workerTimeoutInSeconds, err := config.PositiveInt(config.EnvWorkerTimeoutInSeconds, 1800)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse WORKER_INTERVAL_IN_SECONDS environment variable: %v", err)
+		return nil, err
 	}
-	settings.WorkerIntervalInSeconds = workerIntervalInSeconds
 
-	rssFeedLimitStr := os.Getenv("FEED_ITEMS_LIMIT")
-	if rssFeedLimitStr == "" {
-		rssFeedLimitStr = "3"
-	}
-	rssFeedLimit, err := strconv.Atoi(rssFeedLimitStr)
+	workerIntervalInSeconds, err := config.PositiveInt(config.EnvWorkerIntervalInSeconds, 3600)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse FEED_ITEMS_LIMIT environment variable: %v", err)
+		return nil, err
 	}
-	settings.RSSFeedLimit = rssFeedLimit
 
-	return &settings, nil
+	rssFeedLimit, err := config.PositiveInt(config.EnvFeedItemsLimit, 3)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Settings{
+		RSSFeedsURLs:            feeds,
+		RSSFeedLimit:            rssFeedLimit,
+		WorkerIntervalInSeconds: workerIntervalInSeconds,
+		WorkerTimeoutInSeconds:  workerTimeoutInSeconds,
+	}, nil
 }
 
-// Run the RSS worker
+func validateFeedURLs(feedURLs []string) error {
+	for _, feedURL := range feedURLs {
+		if err := validateFeedURL(feedURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateFeedURL(feedURL string) error {
+	parsed, err := url.Parse(feedURL)
+	if err != nil {
+		return fmt.Errorf("invalid %s URL %q: %v", config.EnvFeeds, feedURL, err)
+	}
+
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("invalid %s URL %q: scheme must be http or https", config.EnvFeeds, feedURL)
+	}
+
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return fmt.Errorf("invalid %s URL %q: host is empty", config.EnvFeeds, feedURL)
+	}
+	if err := validateFeedHost(host); err != nil {
+		return fmt.Errorf("invalid %s URL %q: %v", config.EnvFeeds, feedURL, err)
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("invalid %s URL %q: host IP is not allowed", config.EnvFeeds, feedURL)
+		}
+		return nil
+	}
+
+	ips, err := lookupIP(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve %s URL %q: %v", config.EnvFeeds, feedURL, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("failed to resolve %s URL %q: no IPs returned", config.EnvFeeds, feedURL)
+	}
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("invalid %s URL %q: resolved IP is not allowed", config.EnvFeeds, feedURL)
+		}
+	}
+
+	return nil
+}
+
+func validateFeedHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("host is empty")
+	}
+	if isBlockedHostname(host) {
+		return fmt.Errorf("host is not allowed")
+	}
+	return nil
+}
+
+func isBlockedHostname(host string) bool {
+	normalized := strings.TrimSuffix(strings.ToLower(host), ".")
+	return normalized == "localhost" || strings.HasSuffix(normalized, ".localhost") || strings.HasSuffix(normalized, ".local")
+}
+
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
+}
+
 func (w Worker) Run(ctx context.Context) error {
 	log.Printf("[INFO] activate RSS worker")
+	w = w.withDefaults()
+
+	if err := w.RunOnce(ctx); err != nil {
+		log.Printf("[ERROR] failed to fetch posts: %v", err)
+	}
 
 	ticker := time.NewTicker(time.Duration(w.Settings.WorkerIntervalInSeconds) * time.Second)
 	defer ticker.Stop()
@@ -103,42 +324,26 @@ func (w Worker) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := w.runFetchPosts(); err != nil {
+			if err := w.RunOnce(ctx); err != nil {
 				log.Printf("[ERROR] failed to fetch posts: %v", err)
 			}
 		}
 	}
 }
 
-func (w Worker) runFetchPosts() error {
-	log.Printf("[INFO] runFetchPosts triggered at {%v}", time.Now())
+func (w Worker) RunOnce(ctx context.Context) error {
+	w = w.withDefaults()
 
-	fp := gofeed.NewParser()
+	log.Printf("[INFO] runFetchPosts triggered at {%v}", w.Clock.Now())
 
-	ctx, cancel := context.WithTimeout(context.Background(),
+	runCtx, cancel := context.WithTimeout(ctx,
 		time.Duration(w.Settings.WorkerTimeoutInSeconds)*time.Second)
 	defer cancel()
 
 	var finalErr error
 
-	// Fetch fresh posts from all feeds
 	for _, feedURL := range w.Settings.RSSFeedsURLs {
-		var feed *gofeed.Feed
-		var err error
-
-		for attempt := 0; attempt < 3; attempt++ {
-			if attempt > 0 {
-				log.Printf("[INFO] retry %d fetching feed %s", attempt, feedURL)
-				time.Sleep(time.Duration(attempt*2) * time.Second)
-			}
-
-			feed, err = fp.ParseURLWithContext(feedURL, ctx)
-			if err == nil {
-				break
-			}
-			log.Printf("[WARN] attempt %d to fetch feed %s failed: %v", attempt+1, feedURL, err)
-		}
-
+		feed, err := w.fetchWithRetry(runCtx, feedURL)
 		if err != nil {
 			log.Printf("[ERROR] failed to parse feed (%v) after retries: %v", feedURL, err)
 			finalErr = fmt.Errorf("failed to parse feed: %v", err)
@@ -146,68 +351,58 @@ func (w Worker) runFetchPosts() error {
 		}
 
 		if len(feed.Items) == 0 {
-			// feed is empty
 			continue
 		}
 
 		partitionKey := w.Hasher.HashString(feedURL)
-		freshPosts := []*store.PostV1{}
-		for _, item := range feed.Items[:min(len(feed.Items), w.Settings.RSSFeedLimit)] {
-			freshPosts = append(freshPosts, &store.PostV1{
-				ID:           item.GUID,
-				PartitionKey: partitionKey,
-				SourceURL:    item.Link,
-				Title:        item.Title,
-				Text:         item.Content,
-				CreatedAt:    time.Now().UTC(),
-			})
-		}
-
-		// Load stored posts from the database
-		storedPostsResult, err := w.Blogger.GetPosts(1, w.Settings.RSSFeedLimit, partitionKey)
+		storedPostIDs, err := w.PostService.FindRecentPostIDs(partitionKey, 0)
 		if err != nil {
 			log.Printf("[ERROR] failed to load existing posts for feed %s: %v", feedURL, err)
 			finalErr = fmt.Errorf("failed to load existing posts: %v", err)
 			continue
 		}
-		storedPosts := storedPostsResult.Posts
 
-		postsToCreate := w.distinctNewPosts(freshPosts, storedPosts)
+		freshPosts := make([]blogger.Post, 0, min(len(feed.Items), w.Settings.RSSFeedLimit))
+		for _, item := range feed.Items[:min(len(feed.Items), w.Settings.RSSFeedLimit)] {
+			postID := strings.TrimSpace(item.ID)
+			if postID == "" {
+				postID = item.SourceURL
+			}
+			if postID == "" {
+				postID = item.Title + "\n" + item.Text
+			}
+			postID = w.Hasher.HashString(partitionKey + "\n" + postID)
 
-		var successfulPosts []*store.PostV1
+			freshPosts = append(freshPosts, blogger.Post{
+				ID:           postID,
+				PartitionKey: partitionKey,
+				SourceURL:    item.SourceURL,
+				Title:        item.Title,
+				Text:         item.Text,
+				CreatedAt:    w.Clock.Now().UTC(),
+			})
+		}
+
+		postsToCreate := distinctNewPosts(freshPosts, storedPostIDs)
+
+		successfulPosts := make([]blogger.Post, 0, len(postsToCreate))
 
 		for _, postToCreate := range postsToCreate {
-			var summirizedText string
-			var summarizeErr error
-
-			for attempt := 0; attempt < 3; attempt++ {
-				if attempt > 0 {
-					log.Printf("[INFO] retry %d summarizing post %s", attempt, postToCreate.SourceURL)
-					time.Sleep(time.Duration(attempt) * time.Second)
-				}
-
-				summirizedText, summarizeErr = w.Assistent.SummarizeText(postToCreate.Text)
-				if summarizeErr == nil {
-					break
-				}
-				log.Printf("[WARN] attempt %d to summarize post %s failed: %v",
-					attempt+1, postToCreate.SourceURL, err)
-			}
-
+			summarizedText, summarizeErr := w.summarizeWithRetry(runCtx, postToCreate)
 			if summarizeErr != nil {
 				log.Printf("[ERROR] failed to summarize post (%v) after retries: %v",
-					postToCreate.SourceURL, err)
+					postToCreate.SourceURL, summarizeErr)
+				finalErr = fmt.Errorf("failed to summarize post: %v", summarizeErr)
 				continue
 			}
 
 			log.Printf("[INFO] runFetchPosts processed post: {%s}", postToCreate.SourceURL)
-			postToCreate.Text = summirizedText
+			postToCreate.Text = summarizedText
 			successfulPosts = append(successfulPosts, postToCreate)
 		}
 
 		if len(successfulPosts) > 0 {
-			_, err := w.Blogger.SavePostsBulk(successfulPosts)
-			if err != nil {
+			if err := w.PostService.SavePosts(successfulPosts); err != nil {
 				log.Printf("[ERROR] failed to save posts for feed %s: %v", feedURL, err)
 				finalErr = fmt.Errorf("failed to save posts: %v", err)
 				continue
@@ -217,20 +412,66 @@ func (w Worker) runFetchPosts() error {
 		}
 	}
 
-	log.Printf("[INFO] runFetchPosts finished at {%v}", time.Now())
+	log.Printf("[INFO] runFetchPosts finished at {%v}", w.Clock.Now())
 	return finalErr
 }
 
-func (w Worker) distinctNewPosts(freshPosts []*store.PostV1, storedPosts []*store.PostV1) []*store.PostV1 {
-	storedMap := make(map[string]bool)
-	for _, post := range storedPosts {
-		storedMap[post.ID] = true
+func (w Worker) fetchWithRetry(ctx context.Context, feedURL string) (*Feed, error) {
+	var feed *Feed
+	var err error
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			log.Printf("[INFO] retry %d fetching feed %s", attempt, feedURL)
+			if sleepErr := w.Sleeper.Sleep(ctx, time.Duration(attempt*2)*time.Second); sleepErr != nil {
+				return nil, sleepErr
+			}
+		}
+
+		feed, err = w.FeedFetcher.Fetch(ctx, feedURL)
+		if err == nil {
+			return feed, nil
+		}
+		log.Printf("[WARN] attempt %d to fetch feed %s failed: %v", attempt+1, feedURL, err)
 	}
 
-	var postsToCreate []*store.PostV1
+	return nil, err
+}
+
+func (w Worker) summarizeWithRetry(ctx context.Context, post blogger.Post) (string, error) {
+	var summarizedText string
+	var err error
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			log.Printf("[INFO] retry %d summarizing post %s", attempt, post.SourceURL)
+			if sleepErr := w.Sleeper.Sleep(ctx, time.Duration(attempt)*time.Second); sleepErr != nil {
+				return "", sleepErr
+			}
+		}
+
+		summarizedText, err = w.Summarizer.SummarizeText(ctx, post.Text)
+		if err == nil {
+			return summarizedText, nil
+		}
+		log.Printf("[WARN] attempt %d to summarize post %s failed: %v",
+			attempt+1, post.SourceURL, err)
+	}
+
+	return "", err
+}
+
+func distinctNewPosts(freshPosts []blogger.Post, storedPostIDs []string) []blogger.Post {
+	storedMap := make(map[string]bool)
+	for _, postID := range storedPostIDs {
+		storedMap[postID] = true
+	}
+
+	var postsToCreate []blogger.Post
 	for _, freshPost := range freshPosts {
 		if _, exists := storedMap[freshPost.ID]; !exists {
 			postsToCreate = append(postsToCreate, freshPost)
+			storedMap[freshPost.ID] = true
 		}
 	}
 

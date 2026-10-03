@@ -2,42 +2,119 @@ package blogger
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/rjxby/rss-sum/backend/store"
 )
 
-// BloggerProc creates and save blogs
 type BloggerProc struct {
-	engine Engine
+	repository Repository
 }
 
-// New makes BloggerProc
-func New(engine Engine) *BloggerProc {
+func New(repository Repository) *BloggerProc {
 	return &BloggerProc{
-		engine: engine,
+		repository: repository,
 	}
 }
 
-// Engine defines interface to save and load data
-type Engine interface {
+type Post struct {
+	ID           string
+	PartitionKey string
+	Title        string
+	Text         string
+	SourceURL    string
+	CreatedAt    time.Time
+}
+
+type PostsPage struct {
+	Posts        []Post
+	PartitionKey string
+	Page         int
+	PageSize     int
+	Size         int64
+}
+
+type Repository interface {
 	GetPosts(page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error)
 	SavePostsBulk(postsToSave []*store.PostV1) ([]*store.PostV1, error)
+	FindRecentPostIDs(partitionKey string, limit int) ([]string, error)
 }
 
-func (p BloggerProc) GetPosts(page int, pageSize int, searchTerm string) (*store.PaginationPostsResult, error) {
-	results, err := p.engine.GetPosts(page, pageSize, searchTerm)
+func (p BloggerProc) ListPosts(page int, pageSize int, partitionKey string) (*PostsPage, error) {
+	results, err := p.repository.GetPosts(page, pageSize, partitionKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get posts: %v", err)
+		return nil, fmt.Errorf("failed to list posts: %v", err)
 	}
 
-	return results, nil
+	return mapPostsPage(results), nil
 }
 
-func (p BloggerProc) SavePostsBulk(postsToSave []*store.PostV1) ([]*store.PostV1, error) {
-	results, err := p.engine.SavePostsBulk(postsToSave)
-	if err != nil {
-		return nil, fmt.Errorf("failed to save posts bulk: %v", err)
+func (p BloggerProc) SavePosts(postsToSave []Post) error {
+	if len(postsToSave) == 0 {
+		return nil
 	}
 
-	return results, nil
+	if _, err := p.repository.SavePostsBulk(mapStorePosts(postsToSave)); err != nil {
+		return fmt.Errorf("failed to save posts: %v", err)
+	}
+
+	return nil
+}
+
+func (p BloggerProc) FindRecentPostIDs(partitionKey string, limit int) ([]string, error) {
+	postIDs, err := p.repository.FindRecentPostIDs(partitionKey, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find recent post ids: %v", err)
+	}
+
+	return postIDs, nil
+}
+
+func mapPostsPage(result *store.PaginationPostsResult) *PostsPage {
+	if result == nil {
+		return nil
+	}
+
+	posts := make([]Post, 0, len(result.Posts))
+	for _, post := range result.Posts {
+		posts = append(posts, mapPost(post))
+	}
+
+	return &PostsPage{
+		Posts:        posts,
+		PartitionKey: result.PartitionKey,
+		Page:         result.Page,
+		PageSize:     result.PageSize,
+		Size:         result.Size,
+	}
+}
+
+func mapPost(post *store.PostV1) Post {
+	if post == nil {
+		return Post{}
+	}
+
+	return Post{
+		ID:           post.ID,
+		PartitionKey: post.PartitionKey,
+		Title:        post.Title,
+		Text:         post.Text,
+		SourceURL:    post.SourceURL,
+		CreatedAt:    post.CreatedAt,
+	}
+}
+
+func mapStorePosts(posts []Post) []*store.PostV1 {
+	mapped := make([]*store.PostV1, 0, len(posts))
+	for _, post := range posts {
+		mapped = append(mapped, &store.PostV1{
+			ID:           post.ID,
+			PartitionKey: post.PartitionKey,
+			Title:        post.Title,
+			Text:         post.Text,
+			SourceURL:    post.SourceURL,
+			CreatedAt:    post.CreatedAt,
+		})
+	}
+	return mapped
 }

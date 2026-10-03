@@ -3,107 +3,134 @@ package blogger
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/rjxby/rss-sum/backend/store"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 )
 
-// Mock engine for testing
-type MockEngine struct {
-	mock.Mock
+type fakeRepository struct {
+	getPostsResult      *store.PaginationPostsResult
+	getPostsErr         error
+	savePostsErr        error
+	findRecentPostIDs   []string
+	findRecentPostIDErr error
+	savedPosts          []*store.PostV1
 }
 
-func (m *MockEngine) GetPosts(page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error) {
-	args := m.Called(page, pageSize, partitionKey)
-	return args.Get(0).(*store.PaginationPostsResult), args.Error(1)
+func (f *fakeRepository) GetPosts(page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error) {
+	return f.getPostsResult, f.getPostsErr
 }
 
-func (m *MockEngine) SavePostsBulk(postsToSave []*store.PostV1) ([]*store.PostV1, error) {
-	args := m.Called(postsToSave)
-	return args.Get(0).([]*store.PostV1), args.Error(1)
+func (f *fakeRepository) SavePostsBulk(postsToSave []*store.PostV1) ([]*store.PostV1, error) {
+	f.savedPosts = postsToSave
+	return postsToSave, f.savePostsErr
 }
 
-func TestGetPosts(t *testing.T) {
-	t.Run("Success", func(t *testing.T) {
-		// Setup
-		mockEngine := new(MockEngine)
-		expectedResult := &store.PaginationPostsResult{
+func (f *fakeRepository) FindRecentPostIDs(partitionKey string, limit int) ([]string, error) {
+	return f.findRecentPostIDs, f.findRecentPostIDErr
+}
+
+func TestListPostsMapsStorePostsToDomainPosts(t *testing.T) {
+	createdAt := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		getPostsResult: &store.PaginationPostsResult{
 			Posts: []*store.PostV1{
-				{ID: "1", Title: "Post 1"},
-				{ID: "2", Title: "Post 2"},
+				{
+					ID:           "post-1",
+					PartitionKey: "feed-1",
+					Title:        "Post 1",
+					Text:         "Summary 1",
+					SourceURL:    "https://example.com/1",
+					CreatedAt:    createdAt,
+				},
 			},
-			Page:     1,
-			PageSize: 10,
-		}
-		mockEngine.On("GetPosts", 1, 10, "test-key").Return(expectedResult, nil)
-		blogger := New(mockEngine)
+			PartitionKey: "feed-1",
+			Page:         2,
+			PageSize:     10,
+			Size:         21,
+		},
+	}
 
-		// Execute
-		result, err := blogger.GetPosts(1, 10, "test-key")
+	result, err := New(repository).ListPosts(2, 10, "feed-1")
 
-		// Verify
-		assert.NoError(t, err)
-		assert.Equal(t, expectedResult, result)
-		mockEngine.AssertExpectations(t)
-	})
-
-	t.Run("Error", func(t *testing.T) {
-		// Setup
-		mockEngine := new(MockEngine)
-		expectedError := errors.New("database error")
-		mockEngine.On("GetPosts", 1, 10, "test-key").Return((*store.PaginationPostsResult)(nil), expectedError)
-		blogger := New(mockEngine)
-
-		// Execute
-		result, err := blogger.GetPosts(1, 10, "test-key")
-
-		// Verify
-		assert.Error(t, err)
-		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "failed to get posts")
-		mockEngine.AssertExpectations(t)
-	})
+	assert.NoError(t, err)
+	assert.Equal(t, &PostsPage{
+		Posts: []Post{
+			{
+				ID:           "post-1",
+				PartitionKey: "feed-1",
+				Title:        "Post 1",
+				Text:         "Summary 1",
+				SourceURL:    "https://example.com/1",
+				CreatedAt:    createdAt,
+			},
+		},
+		PartitionKey: "feed-1",
+		Page:         2,
+		PageSize:     10,
+		Size:         21,
+	}, result)
 }
 
-func TestSavePostsBulk(t *testing.T) {
-	t.Run("Success", func(t *testing.T) {
-		// Setup
-		mockEngine := new(MockEngine)
-		posts := []*store.PostV1{
-			{ID: "1", Title: "Post 1"},
-			{ID: "2", Title: "Post 2"},
-		}
-		mockEngine.On("SavePostsBulk", posts).Return(posts, nil)
-		blogger := New(mockEngine)
+func TestListPostsWrapsRepositoryError(t *testing.T) {
+	result, err := New(&fakeRepository{getPostsErr: errors.New("database error")}).
+		ListPosts(1, 10, "")
 
-		// Execute
-		result, err := blogger.SavePostsBulk(posts)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "failed to list posts")
+}
 
-		// Verify
-		assert.NoError(t, err)
-		assert.Equal(t, posts, result)
-		mockEngine.AssertExpectations(t)
+func TestSavePostsMapsDomainPostsToStorePosts(t *testing.T) {
+	createdAt := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{}
+
+	err := New(repository).SavePosts([]Post{
+		{
+			ID:           "post-1",
+			PartitionKey: "feed-1",
+			Title:        "Post 1",
+			Text:         "Summary 1",
+			SourceURL:    "https://example.com/1",
+			CreatedAt:    createdAt,
+		},
 	})
 
-	t.Run("Error", func(t *testing.T) {
-		// Setup
-		mockEngine := new(MockEngine)
-		posts := []*store.PostV1{
-			{ID: "1", Title: "Post 1"},
-			{ID: "2", Title: "Post 2"},
-		}
-		expectedError := errors.New("database error")
-		mockEngine.On("SavePostsBulk", posts).Return([]*store.PostV1(nil), expectedError)
-		blogger := New(mockEngine)
+	assert.NoError(t, err)
+	assert.Equal(t, []*store.PostV1{
+		{
+			ID:           "post-1",
+			PartitionKey: "feed-1",
+			Title:        "Post 1",
+			Text:         "Summary 1",
+			SourceURL:    "https://example.com/1",
+			CreatedAt:    createdAt,
+		},
+	}, repository.savedPosts)
+}
 
-		// Execute
-		result, err := blogger.SavePostsBulk(posts)
+func TestSavePostsWrapsRepositoryError(t *testing.T) {
+	err := New(&fakeRepository{savePostsErr: errors.New("database error")}).
+		SavePosts([]Post{{ID: "post-1"}})
 
-		// Verify
-		assert.Error(t, err)
-		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "failed to save posts bulk")
-		mockEngine.AssertExpectations(t)
-	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to save posts")
+}
+
+func TestFindRecentPostIDsWrapsRepository(t *testing.T) {
+	result, err := New(&fakeRepository{findRecentPostIDs: []string{"post-2", "post-1"}}).
+		FindRecentPostIDs("feed-1", 2)
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"post-2", "post-1"}, result)
+}
+
+func TestFindRecentPostIDsWrapsRepositoryError(t *testing.T) {
+	result, err := New(&fakeRepository{findRecentPostIDErr: errors.New("database error")}).
+		FindRecentPostIDs("feed-1", 2)
+
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "failed to find recent post ids")
 }

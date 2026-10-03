@@ -3,13 +3,18 @@ package store
 import (
 	"fmt"
 	"log"
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/rjxby/rss-sum/backend/config"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-var databaseName = "data/rss-sum.sqlite"
+const defaultDatabasePath = "data/rss-sum.sqlite"
 
 type Database struct {
 	db *gorm.DB
@@ -23,21 +28,73 @@ type PaginationPostsResult struct {
 	Size         int64
 }
 
-// NewDatabase makes persistent sqlite based store
 func NewDatabase() (*Database, error) {
-	log.Printf("[INFO] sqlite (persistent) store")
+	return NewDatabaseWithPath(config.OptionalString(config.EnvDatabasePath, defaultDatabasePath))
+}
+
+func NewDatabaseWithPath(path string) (*Database, error) {
+	log.Printf("[INFO] sqlite (persistent) store: %s", path)
 	result := Database{}
 
-	db, err := gorm.Open(sqlite.Open(databaseName), &gorm.Config{
+	if err := ensureDatabaseDir(path); err != nil {
+		return nil, err
+	}
+
+	db, err := gorm.Open(sqlite.Open(sqliteDSN(path)), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("[ERROR] failed to open database: %v", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("[ERROR] failed to access underlying database: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 
 	result.db = db
 
 	return &result, nil
+}
+
+func sqliteDSN(path string) string {
+	if path == ":memory:" || strings.HasPrefix(path, "file::memory:") {
+		return path
+	}
+
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + "_busy_timeout=5000&_journal_mode=WAL"
+}
+
+func ensureDatabaseDir(path string) error {
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
+		return nil
+	}
+
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create database directory %q: %v", dir, err)
+	}
+
+	return nil
+}
+
+func (s *Database) Close() error {
+	db, err := s.db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to access underlying database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		return fmt.Errorf("failed to close database: %v", err)
+	}
+	return nil
 }
 
 func (s *Database) Migrate() error {
@@ -52,16 +109,37 @@ func (s *Database) Migrate() error {
 }
 
 func (s *Database) GetPosts(page int, pageSize int, partitionKey string) (result *PaginationPostsResult, err error) {
+	if page < 1 || pageSize < 1 {
+		return nil, fmt.Errorf("page and pageSize must be positive")
+	}
+	if page-1 > math.MaxInt/pageSize {
+		return nil, fmt.Errorf("pagination offset exceeds the supported integer range")
+	}
 	var posts []*PostV1
 	var size int64
 	offset := (page - 1) * pageSize
 
 	if partitionKey != "" {
-		s.db.Model(&PostV1{}).Where("partition_key = ?", partitionKey).Count(&size)
-		s.db.Where("partition_key = ?", partitionKey).Offset(offset).Limit(pageSize).Find(&posts)
+		if err := s.db.Model(&PostV1{}).Where("partition_key = ?", partitionKey).Count(&size).Error; err != nil {
+			return nil, fmt.Errorf("failed to count posts: %v", err)
+		}
+		if err := s.db.Where("partition_key = ?", partitionKey).
+			Order("created_at DESC, id DESC").
+			Offset(offset).
+			Limit(pageSize).
+			Find(&posts).Error; err != nil {
+			return nil, fmt.Errorf("failed to find posts: %v", err)
+		}
 	} else {
-		s.db.Model(&PostV1{}).Count(&size)
-		s.db.Offset(offset).Limit(pageSize).Find(&posts)
+		if err := s.db.Model(&PostV1{}).Count(&size).Error; err != nil {
+			return nil, fmt.Errorf("failed to count posts: %v", err)
+		}
+		if err := s.db.Order("created_at DESC, id DESC").
+			Offset(offset).
+			Limit(pageSize).
+			Find(&posts).Error; err != nil {
+			return nil, fmt.Errorf("failed to find posts: %v", err)
+		}
 	}
 
 	if posts == nil {
@@ -76,11 +154,16 @@ func (s *Database) GetPosts(page int, pageSize int, partitionKey string) (result
 		Size:         size}, nil
 }
 
-func (s *Database) SavePostsBulk(postsToSave []*PostV1) ([]*PostV1, error) {
+func (s *Database) SavePostsBulk(postsToSave []*PostV1) (saved []*PostV1, err error) {
 	tx := s.db.Begin()
+	if tx.Error != nil {
+		return nil, fmt.Errorf("failed to begin posts creation transaction: %v", tx.Error)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
+			saved = nil
+			err = fmt.Errorf("failed to create posts: panic: %v", r)
 		}
 	}()
 
@@ -96,4 +179,24 @@ func (s *Database) SavePostsBulk(postsToSave []*PostV1) ([]*PostV1, error) {
 	}
 
 	return postsToSave, nil
+}
+
+func (s *Database) FindRecentPostIDs(partitionKey string, limit int) ([]string, error) {
+	query := s.db.Model(&PostV1{}).Select("id").Order("created_at DESC, id DESC")
+	if partitionKey != "" {
+		query = query.Where("partition_key = ?", partitionKey)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	var postIDs []string
+	if err := query.Find(&postIDs).Error; err != nil {
+		return nil, fmt.Errorf("failed to find recent post ids: %v", err)
+	}
+	if postIDs == nil {
+		postIDs = []string{}
+	}
+
+	return postIDs, nil
 }

@@ -5,21 +5,18 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// JSON is a map alias, just for convenience
 type JSON map[string]interface{}
 
-// LoggerFlag type
 type LoggerFlag int
 
-// logger flags enum
 const (
 	LogAll LoggerFlag = iota
 	LogBody
@@ -28,7 +25,6 @@ const maxBody = 1024
 
 var reMultWhtsp = regexp.MustCompile(`[\s\p{Zs}]{2,}`)
 
-// Logger middleware prints http log. Customized by set of LoggerFlag
 func Logger(l *log.Logger, flags ...LoggerFlag) func(http.Handler) http.Handler {
 
 	inFlags := func(f LoggerFlag) bool {
@@ -52,8 +48,7 @@ func Logger(l *log.Logger, flags ...LoggerFlag) func(http.Handler) http.Handler 
 						r.Body = io.NopCloser(bytes.NewReader(content))
 
 						if len(result) > 0 {
-							result = strings.ReplaceAll(result, "\n", " ")
-							result = reMultWhtsp.ReplaceAllString(result, " ")
+							result = sanitizeLogValue(result)
 						}
 
 						if len(result) > maxBody {
@@ -68,10 +63,7 @@ func Logger(l *log.Logger, flags ...LoggerFlag) func(http.Handler) http.Handler 
 			defer func() {
 				t2 := time.Now()
 
-				q := r.URL.String()
-				if qun, err := url.QueryUnescape(q); err == nil {
-					q = qun
-				}
+				q := sanitizeLogValue(r.URL.RequestURI())
 				l.Printf("[INFO] REST %s - %s - %s - %d (%d) - %v %s",
 					r.Method, q, strings.Split(r.RemoteAddr, ":")[0],
 					ww.Status(), ww.BytesWritten(), t2.Sub(t1), body)
@@ -83,4 +75,26 @@ func Logger(l *log.Logger, flags ...LoggerFlag) func(http.Handler) http.Handler 
 	}
 
 	return f
+}
+
+func sanitizeLogValue(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	return strings.TrimSpace(reMultWhtsp.ReplaceAllString(value, " "))
+}
+
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+
+		next.ServeHTTP(w, r)
+	})
 }

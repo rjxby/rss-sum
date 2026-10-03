@@ -5,11 +5,9 @@ import (
 	"encoding/hex"
 )
 
-// HasherProc generate hash
 type HasherProc struct {
 }
 
-// New makes HasherProc
 func New() *HasherProc {
 	return &HasherProc{}
 }
