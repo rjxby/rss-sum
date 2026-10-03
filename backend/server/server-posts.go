@@ -2,10 +2,9 @@ package server
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/render"
-	"github.com/rjxby/rss-sum/backend/store"
+	"github.com/rjxby/rss-sum/backend/blogger"
 )
 
 type PostsResultsJSON struct {
@@ -22,25 +21,14 @@ type PostJSON struct {
 	SourceURL string `json:"sourceUrl,omitempty"`
 }
 
-// GET /v1/posts
 func (s Server) getPostsCtrl(w http.ResponseWriter, r *http.Request) {
-
-	// Parse the page pageSize, and partitionKey from the query parameters
-	page, err := parseQueryParam(r.URL.Query().Get("page"))
+	postsQuery, err := parsePostsQuery(r)
 	if err != nil {
-		renderBadRequest(w, r, "invalid page parameter", err)
+		renderBadRequest(w, r, "invalid posts query", err)
 		return
 	}
 
-	pageSize, err := parseQueryParam(r.URL.Query().Get("pageSize"))
-	if err != nil {
-		renderBadRequest(w, r, "invalid pageSize parameter", err)
-		return
-	}
-
-	partitionKey := strings.TrimSpace(r.URL.Query().Get("partitionKey"))
-
-	posts, err := s.Blogger.GetPosts(page, pageSize, partitionKey)
+	posts, err := s.Blogger.ListPosts(postsQuery.Page, postsQuery.PageSize, postsQuery.PartitionKey)
 	if err != nil {
 		renderInternalServerError(w, r, "failed to load posts", err)
 		return
@@ -52,7 +40,7 @@ func (s Server) getPostsCtrl(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, postsResults)
 }
 
-func mapToJSON(posts *store.PaginationPostsResult) *PostsResultsJSON {
+func mapToJSON(posts *blogger.PostsPage) *PostsResultsJSON {
 	var mappedPosts []PostJSON
 	for _, post := range posts.Posts {
 		mappedPosts = append(mappedPosts, PostJSON{

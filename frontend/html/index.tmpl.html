@@ -1,120 +1,50 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="htmx-config" content='{"noSwap":[204,304,"4xx","5xx"],"includeIndicatorCSS":false}'>
     <title>RSS Sum</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
-    <script src="https://unpkg.com/htmx.org@1.9.9" integrity="sha384-QFjmbokDn2DjBjq+fM+8LUIVrAgqcNW2s0PjAxHETgRn9l4fvX31ZxDxvwQnyMOX" crossorigin="anonymous"></script>
-    <style>
-        :root {
-            --primary: #3b82f6;
-            --primary-hover: #2563eb;
-            --primary-focus: rgba(59, 130, 246, 0.25);
-            --primary-inverse: #FFF;
-            --card-background: #1e293b;
-            --card-border: #334155;
-            --card-text: #e2e8f0;
-            --heading-color: #f8fafc;
-            --body-background: #0f172a;
-        }
-
-        body {
-            background-color: var(--body-background);
-            color: var(--card-text);
-            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        }
-
-        .container {
-            padding: 2rem 1rem;
-            max-width: 800px;
-            margin: 0 auto;
-        }
-
-        header {
-            margin-bottom: 2rem;
-            border-bottom: 1px solid var(--card-border);
-            padding-bottom: 1rem;
-        }
-
-        h1 {
-            color: var(--heading-color);
-            font-weight: 700;
-            margin-bottom: 0.5rem;
-        }
-
-        .card {
-            margin-bottom: 1.5rem;
-            padding: 1.5rem;
-            border-radius: 8px;
-            background-color: var(--card-background);
-            border: 1px solid var(--card-border);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-        }
-
-        .card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-        }
-
-        .card-title {
-            color: var(--heading-color);
-            margin-top: 0;
-            margin-bottom: 0.75rem;
-            font-weight: 600;
-        }
-
-        .card-text {
-            margin-bottom: 1rem;
-            line-height: 1.6;
-        }
-
-        .card-link {
-            display: inline-block;
-            margin-top: 0.5rem;
-            color: var(--primary);
-            text-decoration: none;
-            font-weight: 500;
-            transition: color 0.15s ease-in-out;
-        }
-
-        .card-link:hover {
-            color: var(--primary-hover);
-            text-decoration: underline;
-        }
-
-        footer {
-            margin-top: 3rem;
-            text-align: center;
-            color: #64748b;
-            font-size: 0.875rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--card-border);
-        }
-
-        /* Loading spinner */
-        [aria-busy="true"]::before {
-            border-color: var(--primary);
-            border-right-color: transparent;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/app.js" defer></script>
+    <script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
+    <a class="skip-link" href="#latest-articles">Skip to articles</a>
     <main class="container">
-        <header>
-            <h1>RSS Sum</h1>
+        <header class="site-header">
+            <a class="brand" href="/" aria-label="RSS Sum home">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <circle cx="5" cy="19" r="1" fill="currentColor" stroke="none" />
+                    <path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16" />
+                </svg>
+                RSS Sum
+            </a>
+            <span class="site-description">A digest of your feeds</span>
         </header>
 
-        <section id="posts-container"
-            hx-get="/api/v1/posts?page=1&pageSize=10"
-            hx-trigger="load"
-            hx-swap="innerHTML">
-            <article aria-busy="true">Loading articles...</article>
+        <section class="introduction" aria-labelledby="page-title">
+            <p class="eyebrow">Your feeds, condensed</p>
+            <h1 id="page-title">A little less scrolling.<br>A little more reading.</h1>
+            <p class="introduction-text">Short summaries. Follow a story back to its source.</p>
         </section>
 
-        <footer>
-            <p>RSS Sum Service - {{ .Version }}</p>
+        <h2 class="section-heading" id="latest-articles">Latest articles</h2>
+        <section id="posts-container" aria-labelledby="latest-articles" aria-busy="true" data-feed-request
+            hx-get="/api/v1/posts?page=1&pageSize=10"
+            hx-trigger="load, retry"
+            hx-swap="innerHTML">
+            <div class="feed-status" role="status" data-loading-message="Loading articles...">
+                <span class="loading-spinner" aria-hidden="true"></span>
+                <p data-status-text>Loading articles...</p>
+                <button type="button" data-retry hidden>Try again</button>
+            </div>
+        </section>
+
+        <noscript><p class="feed-status">Enable JavaScript to load articles.</p></noscript>
+
+        <footer class="site-footer">
+            <p>RSS Sum <span aria-hidden="true">·</span> {{ .Version }}</p>
         </footer>
     </main>
 </body>
