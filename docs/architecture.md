@@ -15,14 +15,14 @@ The [runtime diagram in the README](../README.md#how-it-works) shows package int
 2. If `RUN_MIGRATION=true`, `backend/store` runs GORM auto-migration.
 3. When enabled, the HTTP server starts on `HTTP_ADDR`, defaulting to `:8080`.
 4. When enabled, the RSS worker runs once immediately, then repeats after `WORKER_INTERVAL_IN_SECONDS`.
-5. Shutdown cancels both goroutines and waits for them to finish.
+5. Shutdown cancels both runtime paths and their HTTP request contexts. The server drains requests, closes remaining connections if the drain times out, and waits for handlers before releasing its database. Shutdown failures reach the process owner.
 
 ## Core packages
 
 - `backend/config` loads the optional `.env` file and parses environment settings for startup and package configuration.
 - `backend/rss/worker` validates configured feed URLs, fetches RSS items with `gofeed`, hashes feed and post identifiers, skips known posts, and retries feed and summary operations.
 - `backend/hasher` derives feed and post identifiers with the Go standard library's SHA-256 implementation.
-- `backend/assistant` selects an LLM provider from `LLM_PROVIDER`, builds a summary prompt, requests structured output, and extracts the `summary` field.
+- `backend/assistant` builds a summary prompt, requests structured output from gen-proxy, and extracts the `summary` field.
 - `backend/blogger` is the application service for listing and saving posts. It keeps persistence details out of the worker and server.
 - `backend/store` owns SQLite access through GORM. `PostV1` is the stored post model.
 - `backend/server` owns routes, middleware, request validation, JSON responses, HTML rendering, and static asset serving.
@@ -115,7 +115,7 @@ The table covers every direct Go dependency in [go.mod](../go.mod), the SQLite i
 | htmx, vendored | `frontend/static/htmx.min.js` | Requests HTML fragments and swaps them into the article list. | Browser |
 | `github.com/stretchr/testify` | Go tests | Provides assertions and mocks. | Test process only |
 
-The assistant uses `net/http` and `encoding/json` from the Go standard library to call providers. It does not require a provider SDK. Templates, asset embedding, hashing, and cancellation also use the standard library. The frontend uses custom CSS and JavaScript alongside htmx; it has no frontend build step.
+The assistant uses `net/http` and `encoding/json` from the Go standard library to call gen-proxy. It does not require an SDK. Templates, asset embedding, hashing, and cancellation also use the standard library. The frontend uses custom CSS and JavaScript alongside htmx; it has no frontend build step.
 
 ## Feed to summary to reader
 
@@ -123,12 +123,18 @@ The assistant uses `net/http` and `encoding/json` from the Go standard library t
 2. It derives feed and post identifiers, reads recent stored IDs through blogger, and filters duplicate items.
 3. The assistant sends each new item's text to the configured LLM service. See the [provider output contract](../README.md#run-locally).
 4. The worker replaces the item's text with its summary and saves successful summaries through blogger and store. Failed summaries are not saved.
-5. The browser loads the embedded page and assets, then htmx requests posts. The server reads stored posts through blogger and store and returns HTML fragments. API clients receive JSON from the same route. See the [API contract](../README.md#api).
+5. The browser loads the embedded page and assets, then requests posts. The reading view uses htmx; Wall digest requests the same HTML fragments directly. The server reads stored posts through blogger and store. API clients receive JSON from the same route. See the [API contract](../README.md#api) and [Wall digest behavior](../README.md#wall-digest).
 
 ## Boundaries
 
 - Feed safety is enforced before and during HTTP fetches. Only public `http` and `https` feed URLs are accepted.
-- LLM provider differences are hidden behind the assistant provider interface.
+- Gen-proxy owns inference-provider integration. RSS Sum calls its Responses API through `backend/assistant`.
 - Stored post fields are mapped through `backend/blogger`; callers do not write GORM models directly.
 - `/api/v1/posts` has one route with two response modes: JSON by default, HTML fragment when `HX-Request: true`.
 - Static assets and templates are loaded from the embedded filesystem, not from runtime disk paths.
+
+## Installed local stack
+
+The installer and launcher in `scripts/setup/local_stack.py` own setup and local process supervision. They remain outside the application packages. Release archives contain RSS Sum and its setup scripts. The installer obtains pinned gen-proxy and llama-runtime dependencies after user consent. See [local setup](setup.md) for download verification, configuration, TLS trust, and cleanup.
+
+The launcher starts a generation gRPC backend, a prompt-reduction gRPC backend, gen-proxy, then RSS Sum. Gen-proxy calls the backends over HTTPS gRPC; RSS Sum uses the existing gen-proxy Responses API over loopback HTTP. Feed validation, summary parsing, and SQLite ownership remain in their existing Go packages. The launcher owns its child processes directly and holds an installation lock for their lifetime. Shutdown and startup failures stop those children before releasing the lock.

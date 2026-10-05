@@ -1,0 +1,10 @@
+{
+  "name": "rss-sum-verification",
+  "private": true,
+  "scripts": {
+    "test:e2e": "node scripts/verify-e2e.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

@@ -1,6 +1,7 @@
 package blogger
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -16,9 +17,11 @@ type fakeRepository struct {
 	findRecentPostIDs   []string
 	findRecentPostIDErr error
 	savedPosts          []*store.PostV1
+	getPostsContext     context.Context
 }
 
-func (f *fakeRepository) GetPosts(page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error) {
+func (f *fakeRepository) GetPostsContext(ctx context.Context, page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error) {
+	f.getPostsContext = ctx
 	return f.getPostsResult, f.getPostsErr
 }
 
@@ -52,7 +55,7 @@ func TestListPostsMapsStorePostsToDomainPosts(t *testing.T) {
 		},
 	}
 
-	result, err := New(repository).ListPosts(2, 10, "feed-1")
+	result, err := New(repository).ListPostsContext(context.Background(), 2, 10, "feed-1")
 
 	assert.NoError(t, err)
 	assert.Equal(t, &PostsPage{
@@ -75,11 +78,21 @@ func TestListPostsMapsStorePostsToDomainPosts(t *testing.T) {
 
 func TestListPostsWrapsRepositoryError(t *testing.T) {
 	result, err := New(&fakeRepository{getPostsErr: errors.New("database error")}).
-		ListPosts(1, 10, "")
+		ListPostsContext(context.Background(), 1, 10, "")
 
 	assert.Error(t, err)
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "failed to list posts")
+}
+
+func TestListPostsContextPreservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repository := &fakeRepository{getPostsErr: context.Canceled}
+	result, err := New(repository).ListPostsContext(ctx, 1, 10, "feed")
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Same(t, ctx, repository.getPostsContext)
 }
 
 func TestSavePostsMapsDomainPostsToStorePosts(t *testing.T) {

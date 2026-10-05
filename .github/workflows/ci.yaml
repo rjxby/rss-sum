@@ -19,6 +19,30 @@ jobs:
       - name: checkout
         uses: actions/checkout@v5
 
+      - name: set up Node for frontend tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: fast verification
+        run: make verify-fast
+
+      - name: install browser test dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: browser verification
+        run: make verify-e2e
+
+      - name: upload browser verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-verification
+          path: artifacts/e2e/
+          if-no-files-found: ignore
+
       - name: build and test
         run: |
           go test -race -v -timeout=100s -covermode=atomic -coverprofile=$GITHUB_WORKSPACE/profile.cov_tmp ./...

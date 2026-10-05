@@ -1,6 +1,7 @@
 package blogger
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -35,15 +36,15 @@ type PostsPage struct {
 }
 
 type Repository interface {
-	GetPosts(page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error)
+	GetPostsContext(ctx context.Context, page int, pageSize int, partitionKey string) (*store.PaginationPostsResult, error)
 	SavePostsBulk(postsToSave []*store.PostV1) ([]*store.PostV1, error)
 	FindRecentPostIDs(partitionKey string, limit int) ([]string, error)
 }
 
-func (p BloggerProc) ListPosts(page int, pageSize int, partitionKey string) (*PostsPage, error) {
-	results, err := p.repository.GetPosts(page, pageSize, partitionKey)
+func (p BloggerProc) ListPostsContext(ctx context.Context, page int, pageSize int, partitionKey string) (*PostsPage, error) {
+	results, err := p.repository.GetPostsContext(ctx, page, pageSize, partitionKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list posts: %v", err)
+		return nil, fmt.Errorf("failed to list posts: %w", err)
 	}
 
 	return mapPostsPage(results), nil

@@ -14,11 +14,15 @@ import (
 
 	"github.com/rjxby/rss-sum/backend/blogger"
 	"github.com/rjxby/rss-sum/backend/config"
+	"github.com/rjxby/rss-sum/backend/hasher"
 )
 
 const maxRSSFeeds = 100
+const maxFeedRedirects = 10
 
-var lookupIP = net.LookupIP
+var lookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+}
 
 type Settings struct {
 	RSSFeedsURLs            []string
@@ -51,10 +55,6 @@ type PostService interface {
 	SavePosts(posts []blogger.Post) error
 }
 
-type Hasher interface {
-	HashString(text string) string
-}
-
 type Clock interface {
 	Now() time.Time
 }
@@ -67,11 +67,9 @@ type Worker struct {
 	Summarizer  Summarizer
 	PostService PostService
 	FeedFetcher FeedFetcher
-	Hasher      Hasher
 	Clock       Clock
 	Sleeper     Sleeper
 	Settings    Settings
-	Version     string
 }
 
 func (w Worker) withDefaults() Worker {
@@ -132,7 +130,10 @@ func safeFeedHTTPClient() *http.Client {
 	return &http.Client{
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if err := validateFeedURL(req.URL.String()); err != nil {
+			if len(via) >= maxFeedRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxFeedRedirects)
+			}
+			if err := validateFeedURL(req.Context(), req.URL.String()); err != nil {
 				return err
 			}
 			return nil
@@ -201,12 +202,12 @@ func (realSleeper) Sleep(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-func ParseSettings() (*Settings, error) {
+func ParseSettingsContext(ctx context.Context) (*Settings, error) {
 	feeds, err := config.StringList(config.EnvFeeds, maxRSSFeeds)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateFeedURLs(feeds); err != nil {
+	if err := validateFeedURLs(ctx, feeds); err != nil {
 		return nil, err
 	}
 
@@ -233,16 +234,16 @@ func ParseSettings() (*Settings, error) {
 	}, nil
 }
 
-func validateFeedURLs(feedURLs []string) error {
+func validateFeedURLs(ctx context.Context, feedURLs []string) error {
 	for _, feedURL := range feedURLs {
-		if err := validateFeedURL(feedURL); err != nil {
+		if err := validateFeedURL(ctx, feedURL); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateFeedURL(feedURL string) error {
+func validateFeedURL(ctx context.Context, feedURL string) error {
 	parsed, err := url.Parse(feedURL)
 	if err != nil {
 		return fmt.Errorf("invalid %s URL %q: %v", config.EnvFeeds, feedURL, err)
@@ -267,9 +268,9 @@ func validateFeedURL(feedURL string) error {
 		return nil
 	}
 
-	ips, err := lookupIP(host)
+	ips, err := lookupIP(ctx, host)
 	if err != nil {
-		return fmt.Errorf("failed to resolve %s URL %q: %v", config.EnvFeeds, feedURL, err)
+		return fmt.Errorf("failed to resolve %s URL %q: %w", config.EnvFeeds, feedURL, err)
 	}
 	if len(ips) == 0 {
 		return fmt.Errorf("failed to resolve %s URL %q: no IPs returned", config.EnvFeeds, feedURL)
@@ -299,36 +300,26 @@ func isBlockedHostname(host string) bool {
 	return normalized == "localhost" || strings.HasSuffix(normalized, ".localhost") || strings.HasSuffix(normalized, ".local")
 }
 
-func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
-}
-
 func (w Worker) Run(ctx context.Context) error {
 	log.Printf("[INFO] activate RSS worker")
 	w = w.withDefaults()
+	interval := time.Duration(w.Settings.WorkerIntervalInSeconds) * time.Second
 
-	if err := w.RunOnce(ctx); err != nil {
-		log.Printf("[ERROR] failed to fetch posts: %v", err)
-	}
-
-	ticker := time.NewTicker(time.Duration(w.Settings.WorkerIntervalInSeconds) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
+	for ctx.Err() == nil {
+		if err := w.RunOnce(ctx); err != nil {
+			log.Printf("[ERROR] failed to fetch posts: %v", err)
+		}
+		if ctx.Err() != nil {
 			return nil
-		case <-ticker.C:
-			if err := w.RunOnce(ctx); err != nil {
-				log.Printf("[ERROR] failed to fetch posts: %v", err)
+		}
+		if err := w.Sleeper.Sleep(ctx, interval); err != nil {
+			if ctx.Err() != nil {
+				return nil
 			}
+			return fmt.Errorf("failed to wait between worker passes: %w", err)
 		}
 	}
+	return nil
 }
 
 func (w Worker) RunOnce(ctx context.Context) error {
@@ -354,7 +345,7 @@ func (w Worker) RunOnce(ctx context.Context) error {
 			continue
 		}
 
-		partitionKey := w.Hasher.HashString(feedURL)
+		partitionKey := hasher.HashString(feedURL)
 		storedPostIDs, err := w.PostService.FindRecentPostIDs(partitionKey, 0)
 		if err != nil {
 			log.Printf("[ERROR] failed to load existing posts for feed %s: %v", feedURL, err)
@@ -371,7 +362,7 @@ func (w Worker) RunOnce(ctx context.Context) error {
 			if postID == "" {
 				postID = item.Title + "\n" + item.Text
 			}
-			postID = w.Hasher.HashString(partitionKey + "\n" + postID)
+			postID = hasher.HashString(partitionKey + "\n" + postID)
 
 			freshPosts = append(freshPosts, blogger.Post{
 				ID:           postID,

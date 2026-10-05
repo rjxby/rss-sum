@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -29,7 +30,7 @@ func TestGetPostsRejectsUnsafePagination(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("page=%d/size=%d", tc.page, tc.pageSize), func(t *testing.T) {
 			database := &Database{}
-			result, err := database.GetPosts(tc.page, tc.pageSize, "")
+			result, err := database.GetPostsContext(context.Background(), tc.page, tc.pageSize, "")
 			require.Error(t, err)
 			require.Nil(t, result)
 		})
@@ -53,7 +54,7 @@ func TestGetPostsPaginationBounds(t *testing.T) {
 				if pageSize > 1 {
 					page = math.MaxInt/pageSize + 1
 				}
-				result, err := database.GetPosts(page, pageSize, partitionKey)
+				result, err := database.GetPostsContext(context.Background(), page, pageSize, partitionKey)
 				require.NoError(t, err)
 				require.Equal(t, page, result.Page)
 				require.Equal(t, pageSize, result.PageSize)
@@ -67,11 +68,11 @@ func TestGetPostsPaginationBounds(t *testing.T) {
 			})
 		}
 	}
-	result, err := database.GetPosts(2, 1, "feed")
+	result, err := database.GetPostsContext(context.Background(), 2, 1, "feed")
 	require.NoError(t, err)
 	require.Len(t, result.Posts, 1)
 	require.Equal(t, "a", result.Posts[0].ID)
-	result, err = database.GetPosts(1, math.MaxInt, "feed")
+	result, err = database.GetPostsContext(context.Background(), 1, math.MaxInt, "feed")
 	require.NoError(t, err)
 	require.Len(t, result.Posts, 2)
 }

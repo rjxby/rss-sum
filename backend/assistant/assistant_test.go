@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,225 +15,83 @@ import (
 )
 
 func TestParseSettings(t *testing.T) {
-	t.Run("DefaultProviderIsOllama", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, "")
-		t.Setenv(config.EnvOllamaHost, "localhost")
-		t.Setenv(config.EnvOllamaPort, "11434")
-		t.Setenv(config.EnvOllamaScheme, "http")
-		t.Setenv(config.EnvOllamaModel, "llama3:8b")
+	t.Setenv(config.EnvGenProxyBaseURL, "http://127.0.0.1:7001")
+	t.Setenv(config.EnvGenProxyModel, "local-model")
+	t.Setenv(config.EnvGenProxyAPIKey, "")
+	t.Setenv(config.EnvGenProxyTimeoutInSeconds, "")
+	t.Setenv(config.EnvLLMSystemPromptFile, "")
 
+	t.Run("GenProxyDefaults", func(t *testing.T) {
 		settings, err := ParseSettings()
-
-		assert.NoError(t, err)
-		assert.Equal(t, ProviderOllama, settings.LLMProvider)
-		assert.Equal(t, "localhost", settings.OllamaHost)
-		assert.Equal(t, "11434", settings.OllamaPort)
-		assert.Equal(t, "http", settings.OllamaScheme)
-		assert.Equal(t, "llama3:8b", settings.OllamaModel)
+		if !assert.NoError(t, err) {
+			return
+		}
+		assert.Equal(t, "http://127.0.0.1:7001", settings.GenProxyBaseURL)
+		assert.Equal(t, "local-model", settings.GenProxyModel)
+		assert.Equal(t, "", settings.GenProxyAPIKey)
 		assert.Equal(t, 30, settings.RequestTimeoutInSeconds)
 		assert.Equal(t, defaultSystemPrompt, settings.SystemPrompt)
 	})
 
-	t.Run("ExplicitOllamaProvider", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, ProviderOllama)
-		t.Setenv(config.EnvOllamaHost, "localhost")
-		t.Setenv(config.EnvOllamaPort, "11434")
-		t.Setenv(config.EnvOllamaScheme, "http")
-		t.Setenv(config.EnvOllamaModel, "llama3:8b")
-
+	t.Run("CustomTimeoutAndAPIKey", func(t *testing.T) {
+		t.Setenv(config.EnvGenProxyTimeoutInSeconds, "60")
+		t.Setenv(config.EnvGenProxyAPIKey, "public-key")
 		settings, err := ParseSettings()
-
-		assert.NoError(t, err)
-		assert.Equal(t, ProviderOllama, settings.LLMProvider)
-		assert.Equal(t, "llama3:8b", settings.OllamaModel)
-	})
-
-	t.Run("CustomTimeout", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, "")
-		t.Setenv(config.EnvOllamaHost, "localhost")
-		t.Setenv(config.EnvOllamaPort, "11434")
-		t.Setenv(config.EnvOllamaScheme, "http")
-		t.Setenv(config.EnvOllamaModel, "llama3:8b")
-		t.Setenv(config.EnvOllamaTimeoutInSeconds, "60")
-
-		settings, err := ParseSettings()
-
-		assert.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 		assert.Equal(t, 60, settings.RequestTimeoutInSeconds)
+		assert.Equal(t, "public-key", settings.GenProxyAPIKey)
 	})
 
-	t.Run("InvalidTimeout", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, "")
-		t.Setenv(config.EnvOllamaHost, "localhost")
-		t.Setenv(config.EnvOllamaPort, "11434")
-		t.Setenv(config.EnvOllamaScheme, "http")
-		t.Setenv(config.EnvOllamaModel, "llama3:8b")
-		t.Setenv(config.EnvOllamaTimeoutInSeconds, "0")
-
-		settings, err := ParseSettings()
-
-		assert.Error(t, err)
-		assert.Nil(t, settings)
-	})
+	for _, test := range []struct {
+		name      string
+		variable  string
+		value     string
+		errorText string
+	}{
+		{"MissingBaseURL", config.EnvGenProxyBaseURL, "", config.EnvGenProxyBaseURL},
+		{"MissingModel", config.EnvGenProxyModel, "", config.EnvGenProxyModel},
+		{"InvalidBaseURL", config.EnvGenProxyBaseURL, "localhost:7001", "absolute URL"},
+		{"MalformedBaseURL", config.EnvGenProxyBaseURL, "http://[invalid", config.EnvGenProxyBaseURL},
+		{"ZeroTimeout", config.EnvGenProxyTimeoutInSeconds, "0", config.EnvGenProxyTimeoutInSeconds},
+		{"NegativeTimeout", config.EnvGenProxyTimeoutInSeconds, "-1", config.EnvGenProxyTimeoutInSeconds},
+		{"NonNumericTimeout", config.EnvGenProxyTimeoutInSeconds, "invalid", config.EnvGenProxyTimeoutInSeconds},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.variable, test.value)
+			settings, err := ParseSettings()
+			assert.ErrorContains(t, err, test.errorText)
+			assert.Nil(t, settings)
+		})
+	}
 
 	t.Run("PromptFile", func(t *testing.T) {
 		promptFile := filepath.Join(t.TempDir(), "system-prompt.txt")
-		err := os.WriteFile(promptFile, []byte("  Custom system prompt.  \n"), 0o600)
-		assert.NoError(t, err)
-
-		t.Setenv(config.EnvLLMProvider, "")
-		t.Setenv(config.EnvOllamaHost, "localhost")
-		t.Setenv(config.EnvOllamaPort, "11434")
-		t.Setenv(config.EnvOllamaScheme, "http")
-		t.Setenv(config.EnvOllamaModel, "llama3:8b")
+		assert.NoError(t, os.WriteFile(promptFile, []byte("  Custom system prompt.  \n"), 0o600))
 		t.Setenv(config.EnvLLMSystemPromptFile, promptFile)
-
 		settings, err := ParseSettings()
-
-		assert.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 		assert.Equal(t, "Custom system prompt.", settings.SystemPrompt)
 	})
 
 	t.Run("MissingPromptFile", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, "")
-		t.Setenv(config.EnvOllamaHost, "localhost")
-		t.Setenv(config.EnvOllamaPort, "11434")
-		t.Setenv(config.EnvOllamaScheme, "http")
-		t.Setenv(config.EnvOllamaModel, "llama3:8b")
 		t.Setenv(config.EnvLLMSystemPromptFile, filepath.Join(t.TempDir(), "missing.txt"))
-
 		settings, err := ParseSettings()
-
-		assert.Error(t, err)
+		assert.ErrorContains(t, err, config.EnvLLMSystemPromptFile)
 		assert.Nil(t, settings)
-		assert.Contains(t, err.Error(), config.EnvLLMSystemPromptFile)
 	})
 
 	t.Run("EmptyPromptFile", func(t *testing.T) {
 		promptFile := filepath.Join(t.TempDir(), "system-prompt.txt")
-		err := os.WriteFile(promptFile, []byte(" \n\t"), 0o600)
-		assert.NoError(t, err)
-
-		t.Setenv(config.EnvLLMProvider, "")
-		t.Setenv(config.EnvOllamaHost, "localhost")
-		t.Setenv(config.EnvOllamaPort, "11434")
-		t.Setenv(config.EnvOllamaScheme, "http")
-		t.Setenv(config.EnvOllamaModel, "llama3:8b")
+		assert.NoError(t, os.WriteFile(promptFile, []byte(" \n\t"), 0o600))
 		t.Setenv(config.EnvLLMSystemPromptFile, promptFile)
-
 		settings, err := ParseSettings()
-
-		assert.Error(t, err)
+		assert.ErrorContains(t, err, "must not be empty")
 		assert.Nil(t, settings)
-		assert.Contains(t, err.Error(), "must not be empty")
 	})
-
-	t.Run("GenProxyProvider", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, ProviderGenProxy)
-		t.Setenv(config.EnvGenProxyBaseURL, "https://localhost:7001")
-		t.Setenv(config.EnvGenProxyModel, "gpt-5.1")
-		t.Setenv(config.EnvGenProxyAPIKey, "public-api-key")
-		t.Setenv(config.EnvGenProxyTimeoutInSeconds, "45")
-
-		settings, err := ParseSettings()
-
-		assert.NoError(t, err)
-		assert.Equal(t, ProviderGenProxy, settings.LLMProvider)
-		assert.Equal(t, "https://localhost:7001", settings.GenProxyBaseURL)
-		assert.Equal(t, "gpt-5.1", settings.GenProxyModel)
-		assert.Equal(t, "public-api-key", settings.GenProxyAPIKey)
-		assert.Equal(t, 45, settings.RequestTimeoutInSeconds)
-	})
-
-	t.Run("GenProxyDoesNotRequireAPIKey", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, ProviderGenProxy)
-		t.Setenv(config.EnvGenProxyBaseURL, "https://localhost:7001")
-		t.Setenv(config.EnvGenProxyModel, "gpt-5.1")
-
-		settings, err := ParseSettings()
-
-		assert.NoError(t, err)
-		assert.Equal(t, "", settings.GenProxyAPIKey)
-		assert.Equal(t, 30, settings.RequestTimeoutInSeconds)
-	})
-
-	t.Run("InvalidProvider", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, "openai")
-
-		settings, err := ParseSettings()
-
-		assert.Error(t, err)
-		assert.Nil(t, settings)
-		assert.Contains(t, err.Error(), config.EnvLLMProvider)
-	})
-
-	t.Run("MissingGenProxyBaseURL", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, ProviderGenProxy)
-		t.Setenv(config.EnvGenProxyModel, "gpt-5.1")
-
-		settings, err := ParseSettings()
-
-		assert.Error(t, err)
-		assert.Nil(t, settings)
-		assert.Contains(t, err.Error(), config.EnvGenProxyBaseURL)
-	})
-
-	t.Run("MissingGenProxyModel", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, ProviderGenProxy)
-		t.Setenv(config.EnvGenProxyBaseURL, "https://localhost:7001")
-
-		settings, err := ParseSettings()
-
-		assert.Error(t, err)
-		assert.Nil(t, settings)
-		assert.Contains(t, err.Error(), config.EnvGenProxyModel)
-	})
-
-	t.Run("InvalidGenProxyBaseURL", func(t *testing.T) {
-		t.Setenv(config.EnvLLMProvider, ProviderGenProxy)
-		t.Setenv(config.EnvGenProxyBaseURL, "localhost:7001")
-		t.Setenv(config.EnvGenProxyModel, "gpt-5.1")
-
-		settings, err := ParseSettings()
-
-		assert.Error(t, err)
-		assert.Nil(t, settings)
-		assert.Contains(t, err.Error(), "absolute URL")
-	})
-
-	tbl := []struct {
-		name        string
-		envVar      string
-		envValue    string
-		expectError bool
-	}{
-		{"MissingHost", config.EnvOllamaHost, "", true},
-		{"MissingPort", config.EnvOllamaPort, "", true},
-		{"MissingScheme", config.EnvOllamaScheme, "", true},
-		{"MissingModel", config.EnvOllamaModel, "", true},
-	}
-
-	for _, tt := range tbl {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(config.EnvLLMProvider, "")
-			t.Setenv(config.EnvOllamaHost, "localhost")
-			t.Setenv(config.EnvOllamaPort, "11434")
-			t.Setenv(config.EnvOllamaScheme, "http")
-			t.Setenv(config.EnvOllamaModel, "llama3:8b")
-
-			t.Setenv(tt.envVar, tt.envValue)
-
-			settings, err := ParseSettings()
-
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Nil(t, settings)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, settings)
-			}
-		})
-	}
 }
 
 type fakeLLMProvider struct {
@@ -301,49 +158,13 @@ func TestSummarizeTextPropagatesContextCancellation(t *testing.T) {
 	assert.Contains(t, err.Error(), "context canceled")
 }
 
-func TestNewLLMProvider(t *testing.T) {
-	t.Run("Ollama", func(t *testing.T) {
-		settings := &Settings{
-			LLMProvider:             ProviderOllama,
-			OllamaHost:              "localhost",
-			OllamaPort:              "11434",
-			OllamaScheme:            "http",
-			OllamaModel:             "llama3:8b",
-			RequestTimeoutInSeconds: 5,
-		}
-
-		provider := newLLMProvider(settings)
-
-		assert.IsType(t, &ollamaProvider{}, provider)
+func TestNewUsesGenProxy(t *testing.T) {
+	proc := New(&Settings{
+		GenProxyBaseURL:         "http://127.0.0.1:7001",
+		GenProxyModel:           "local-model",
+		RequestTimeoutInSeconds: 5,
 	})
-
-	t.Run("GenProxy", func(t *testing.T) {
-		settings := &Settings{
-			LLMProvider:             ProviderGenProxy,
-			GenProxyBaseURL:         "https://localhost:7001",
-			GenProxyModel:           "gpt-5.1",
-			RequestTimeoutInSeconds: 5,
-		}
-
-		provider := newLLMProvider(settings)
-
-		assert.IsType(t, &genProxyProvider{}, provider)
-	})
-
-	t.Run("UnknownProviderFallsBackToOllama", func(t *testing.T) {
-		settings := &Settings{
-			LLMProvider:             "unknown",
-			OllamaHost:              "localhost",
-			OllamaPort:              "11434",
-			OllamaScheme:            "http",
-			OllamaModel:             "llama3:8b",
-			RequestTimeoutInSeconds: 5,
-		}
-
-		provider := newLLMProvider(settings)
-
-		assert.IsType(t, &ollamaProvider{}, provider)
-	})
+	assert.IsType(t, &genProxyProvider{}, proc.provider)
 }
 
 func testGenerationRequest(prompt string) generationRequest {
@@ -352,118 +173,6 @@ func testGenerationRequest(prompt string) generationRequest {
 		UserPrompt:   prompt,
 		Format:       summaryOutputFormat(),
 	}
-}
-
-func TestOllamaProviderGenerate(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/generate", r.URL.Path)
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-
-		var req ollamaRequest
-		err := json.NewDecoder(r.Body).Decode(&req)
-		assert.NoError(t, err)
-		assert.Equal(t, "llama3:8b", req.Model)
-		assert.Equal(t, "test system prompt", req.System)
-		assert.Equal(t, "Test input text", req.Prompt)
-		assert.False(t, req.Stream)
-		assert.Equal(t, "object", req.Format["type"])
-		assert.Contains(t, req.Format, "properties")
-
-		resp := ollamaResponse{Response: `{"summary":"This is a test summary."}`}
-		respJSON, _ := json.Marshal(resp)
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write(respJSON); err != nil {
-			t.Fatalf("Failed to write response: %v", err)
-		}
-	}))
-	defer ts.Close()
-
-	serverURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-
-	settings := &Settings{
-		LLMProvider:             ProviderOllama,
-		OllamaHost:              serverURL.Hostname(),
-		OllamaPort:              serverURL.Port(),
-		OllamaScheme:            serverURL.Scheme,
-		OllamaModel:             "llama3:8b",
-		RequestTimeoutInSeconds: 5,
-	}
-
-	provider := newOllamaProvider(settings)
-	provider.http = ts.Client()
-
-	summary, err := provider.Generate(context.Background(), testGenerationRequest("Test input text"))
-
-	assert.NoError(t, err)
-	assert.Equal(t, "This is a test summary.", summary)
-}
-
-func TestOllamaProviderGenerateInvalidStructuredResponse(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		resp := ollamaResponse{Response: "not json"}
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			t.Fatalf("Failed to write response: %v", err)
-		}
-	}))
-	defer ts.Close()
-
-	serverURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-
-	settings := &Settings{
-		LLMProvider:             ProviderOllama,
-		OllamaHost:              serverURL.Hostname(),
-		OllamaPort:              serverURL.Port(),
-		OllamaScheme:            serverURL.Scheme,
-		OllamaModel:             "llama3:8b",
-		RequestTimeoutInSeconds: 5,
-	}
-
-	provider := newOllamaProvider(settings)
-	provider.http = ts.Client()
-
-	summary, err := provider.Generate(context.Background(), testGenerationRequest("Test input text"))
-
-	assert.Error(t, err)
-	assert.Empty(t, summary)
-	assert.Contains(t, err.Error(), "structured summary")
-}
-
-func TestOllamaProviderGenerateError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer ts.Close()
-
-	serverURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-
-	settings := &Settings{
-		LLMProvider:             ProviderOllama,
-		OllamaHost:              serverURL.Hostname(),
-		OllamaPort:              serverURL.Port(),
-		OllamaScheme:            serverURL.Scheme,
-		OllamaModel:             "llama3:8b",
-		RequestTimeoutInSeconds: 5,
-	}
-
-	provider := newOllamaProvider(settings)
-	provider.http = ts.Client()
-
-	summary, err := provider.Generate(context.Background(), testGenerationRequest("Test input text"))
-
-	assert.Error(t, err)
-	assert.Empty(t, summary)
-	assert.Contains(t, err.Error(), "non-200 status code")
 }
 
 func TestGenProxyProviderGenerate(t *testing.T) {
@@ -515,7 +224,6 @@ func TestGenProxyProviderGenerate(t *testing.T) {
 	defer ts.Close()
 
 	settings := &Settings{
-		LLMProvider:             ProviderGenProxy,
 		GenProxyBaseURL:         ts.URL,
 		GenProxyModel:           "gpt-5.1",
 		GenProxyAPIKey:          "public-api-key",
@@ -543,7 +251,6 @@ func TestGenProxyProviderGenerateWithoutAPIKey(t *testing.T) {
 	defer ts.Close()
 
 	settings := &Settings{
-		LLMProvider:             ProviderGenProxy,
 		GenProxyBaseURL:         ts.URL,
 		GenProxyModel:           "gpt-5.1",
 		RequestTimeoutInSeconds: 5,
@@ -568,7 +275,6 @@ func TestGenProxyProviderGenerateError(t *testing.T) {
 	defer ts.Close()
 
 	settings := &Settings{
-		LLMProvider:             ProviderGenProxy,
 		GenProxyBaseURL:         ts.URL,
 		GenProxyModel:           "gpt-5.1",
 		RequestTimeoutInSeconds: 5,

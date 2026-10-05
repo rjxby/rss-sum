@@ -1,6 +1,8 @@
 # Release process
 
-The [release workflow](../.github/workflows/release.yml) runs when a `v*` tag is pushed. It runs tests with race detection on each target, builds with CGO enabled for SQLite, and publishes the archives with `SHA256SUMS` and generated release notes after all builds pass. The tag is embedded as the application revision. See the [README](../README.md#releases) for supported platforms and archive contents.
+The [release workflow](../.github/workflows/release.yml) runs when a `v*` tag is pushed. It builds RSS Sum with CGO enabled for SQLite and packages the executable with the installer, uninstaller, Python setup helper, README, license, example configuration, and setup guide. It checks the packaged scripts' syntax and help commands, then publishes the archives with `SHA256SUMS` and generated release notes after both platform builds pass. The tag is embedded as the application revision.
+
+[CI](../.github/workflows/ci.yaml) owns tests, including installer tests through `make verify-fast`. CD does not build, download, or bundle gen-proxy, llama-runtime, or models. The installer handles those dependencies after explicit user consent. See [local setup](setup.md) for that contract and the [README](../README.md#releases) for supported platforms.
 
 After merging the release commit into `main`, create and push a version tag:
 

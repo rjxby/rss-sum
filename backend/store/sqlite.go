@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -108,7 +109,7 @@ func (s *Database) Migrate() error {
 	return nil
 }
 
-func (s *Database) GetPosts(page int, pageSize int, partitionKey string) (result *PaginationPostsResult, err error) {
+func (s *Database) GetPostsContext(ctx context.Context, page int, pageSize int, partitionKey string) (result *PaginationPostsResult, err error) {
 	if page < 1 || pageSize < 1 {
 		return nil, fmt.Errorf("page and pageSize must be positive")
 	}
@@ -118,28 +119,20 @@ func (s *Database) GetPosts(page int, pageSize int, partitionKey string) (result
 	var posts []*PostV1
 	var size int64
 	offset := (page - 1) * pageSize
+	db := s.db.WithContext(ctx).Model(&PostV1{})
 
 	if partitionKey != "" {
-		if err := s.db.Model(&PostV1{}).Where("partition_key = ?", partitionKey).Count(&size).Error; err != nil {
-			return nil, fmt.Errorf("failed to count posts: %v", err)
-		}
-		if err := s.db.Where("partition_key = ?", partitionKey).
-			Order("created_at DESC, id DESC").
-			Offset(offset).
-			Limit(pageSize).
-			Find(&posts).Error; err != nil {
-			return nil, fmt.Errorf("failed to find posts: %v", err)
-		}
-	} else {
-		if err := s.db.Model(&PostV1{}).Count(&size).Error; err != nil {
-			return nil, fmt.Errorf("failed to count posts: %v", err)
-		}
-		if err := s.db.Order("created_at DESC, id DESC").
-			Offset(offset).
-			Limit(pageSize).
-			Find(&posts).Error; err != nil {
-			return nil, fmt.Errorf("failed to find posts: %v", err)
-		}
+		db = db.Where("partition_key = ?", partitionKey)
+	}
+	db = db.Session(&gorm.Session{})
+	if err := db.Count(&size).Error; err != nil {
+		return nil, fmt.Errorf("failed to count posts: %w", err)
+	}
+	if err := db.Order("created_at DESC, id DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&posts).Error; err != nil {
+		return nil, fmt.Errorf("failed to find posts: %w", err)
 	}
 
 	if posts == nil {

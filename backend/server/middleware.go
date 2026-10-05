@@ -1,8 +1,6 @@
 package server
 
 import (
-	"bytes"
-	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -15,66 +13,23 @@ import (
 
 type JSON map[string]interface{}
 
-type LoggerFlag int
-
-const (
-	LogAll LoggerFlag = iota
-	LogBody
-)
-const maxBody = 1024
-
 var reMultWhtsp = regexp.MustCompile(`[\s\p{Zs}]{2,}`)
 
-func Logger(l *log.Logger, flags ...LoggerFlag) func(http.Handler) http.Handler {
-
-	inFlags := func(f LoggerFlag) bool {
-		for _, flg := range flags {
-			if flg == LogAll || flg == f {
-				return true
-			}
-		}
-		return false
-	}
-
-	f := func(h http.Handler) http.Handler {
-
-		fn := func(w http.ResponseWriter, r *http.Request) {
+func Logger(l *log.Logger) func(http.Handler) http.Handler {
+	return func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ww := middleware.NewWrapResponseWriter(w, 1)
-
-			body := func() (result string) {
-				if inFlags(LogBody) {
-					if content, err := io.ReadAll(r.Body); err == nil {
-						result = string(content)
-						r.Body = io.NopCloser(bytes.NewReader(content))
-
-						if len(result) > 0 {
-							result = sanitizeLogValue(result)
-						}
-
-						if len(result) > maxBody {
-							result = result[:maxBody] + "..."
-						}
-					}
-				}
-				return result
-			}()
-
 			t1 := time.Now()
 			defer func() {
-				t2 := time.Now()
-
 				q := sanitizeLogValue(r.URL.RequestURI())
-				l.Printf("[INFO] REST %s - %s - %s - %d (%d) - %v %s",
+				l.Printf("[INFO] REST %s - %s - %s - %d (%d) - %v",
 					r.Method, q, strings.Split(r.RemoteAddr, ":")[0],
-					ww.Status(), ww.BytesWritten(), t2.Sub(t1), body)
+					ww.Status(), ww.BytesWritten(), time.Since(t1))
 			}()
 
 			h.ServeHTTP(ww, r)
-		}
-		return http.HandlerFunc(fn)
+		})
 	}
-
-	return f
 }
 
 func sanitizeLogValue(value string) string {

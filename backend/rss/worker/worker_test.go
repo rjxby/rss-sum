@@ -13,6 +13,7 @@ import (
 	"github.com/mmcdole/gofeed"
 	"github.com/rjxby/rss-sum/backend/blogger"
 	"github.com/rjxby/rss-sum/backend/config"
+	"github.com/rjxby/rss-sum/backend/hasher"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -100,19 +101,6 @@ func (f *fakeSummarizer) SummarizeText(ctx context.Context, text string) (string
 	return result.text, result.err
 }
 
-type fakeHasher struct {
-	values map[string]string
-	calls  []string
-}
-
-func (f *fakeHasher) HashString(text string) string {
-	f.calls = append(f.calls, text)
-	if value, ok := f.values[text]; ok {
-		return value
-	}
-	return "hash:" + text
-}
-
 type fakeClock struct {
 	now time.Time
 }
@@ -132,6 +120,7 @@ func (f *fakeSleeper) Sleep(ctx context.Context, duration time.Duration) error {
 
 func TestRunOnceFetchesSummarizesAndSavesNewPosts(t *testing.T) {
 	feedURL := "https://example.com/feed"
+	partition := hasher.HashString(feedURL)
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.FixedZone("test", -4*60*60))
 	fetcher := &fakeFeedFetcher{
 		results: map[string][]fetchResult{
@@ -150,7 +139,7 @@ func TestRunOnceFetchesSummarizesAndSavesNewPosts(t *testing.T) {
 		},
 	}
 	postService := &fakePostService{
-		recentIDs: map[string][]string{"partition-1": {"hash:partition-1\nexisting"}},
+		recentIDs: map[string][]string{partition: {hasher.HashString(partition + "\nexisting")}},
 	}
 	summarizer := &fakeSummarizer{
 		results: map[string][]summaryResult{
@@ -168,28 +157,27 @@ func TestRunOnceFetchesSummarizesAndSavesNewPosts(t *testing.T) {
 		FeedFetcher: fetcher,
 		PostService: postService,
 		Summarizer:  summarizer,
-		Hasher:      &fakeHasher{values: map[string]string{feedURL: "partition-1"}},
 		Clock:       fakeClock{now: now},
 		Sleeper:     &fakeSleeper{},
 	}.RunOnce(context.Background())
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{feedURL}, fetcher.calls)
-	assert.Equal(t, []findCall{{partitionKey: "partition-1", limit: 0}}, postService.findCalls)
+	assert.Equal(t, []findCall{{partitionKey: partition, limit: 0}}, postService.findCalls)
 	assert.Equal(t, []string{"new text 1", "new text 2"}, summarizer.calls)
 	assert.Len(t, postService.saved, 1)
 	assert.Equal(t, []blogger.Post{
 		{
-			ID:           "hash:partition-1\nnew-1",
-			PartitionKey: "partition-1",
+			ID:           hasher.HashString(partition + "\nnew-1"),
+			PartitionKey: partition,
 			Title:        "New 1",
 			Text:         "summary 1",
 			SourceURL:    "https://example.com/new-1",
 			CreatedAt:    now.UTC(),
 		},
 		{
-			ID:           "hash:partition-1\nnew-2",
-			PartitionKey: "partition-1",
+			ID:           hasher.HashString(partition + "\nnew-2"),
+			PartitionKey: partition,
 			Title:        "New 2",
 			Text:         "summary 2",
 			SourceURL:    "https://example.com/new-2",
@@ -220,7 +208,6 @@ func TestRunOnceRetriesFeedFetch(t *testing.T) {
 		FeedFetcher: fetcher,
 		PostService: &fakePostService{},
 		Summarizer:  &fakeSummarizer{},
-		Hasher:      &fakeHasher{values: map[string]string{feedURL: "partition-1"}},
 		Clock:       fakeClock{now: time.Now()},
 		Sleeper:     sleeper,
 	}.RunOnce(context.Background())
@@ -230,9 +217,10 @@ func TestRunOnceRetriesFeedFetch(t *testing.T) {
 	assert.Equal(t, []time.Duration{2 * time.Second, 4 * time.Second}, sleeper.durations)
 }
 
-func TestRunExecutesImmediatelyBeforeFirstTicker(t *testing.T) {
+func TestRunExecutesImmediatelyBeforeFirstInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	fetcher := &cancelingFeedFetcher{cancel: cancel}
+	sleeper := &fakeSleeper{}
 
 	err := Worker{
 		Settings: Settings{
@@ -244,19 +232,20 @@ func TestRunExecutesImmediatelyBeforeFirstTicker(t *testing.T) {
 		FeedFetcher: fetcher,
 		PostService: &fakePostService{},
 		Summarizer:  &fakeSummarizer{},
-		Hasher:      &fakeHasher{values: map[string]string{"https://example.com/feed": "partition-1"}},
 		Clock:       fakeClock{now: time.Now()},
-		Sleeper:     &fakeSleeper{},
+		Sleeper:     sleeper,
 	}.Run(ctx)
 
 	assert.NoError(t, err)
 	assert.Equal(t, 1, fetcher.calls)
+	assert.Empty(t, sleeper.durations)
 }
 
 func TestRunOnceRetriesSummarization(t *testing.T) {
 	feedURL := "https://example.com/feed"
+	partition := hasher.HashString(feedURL)
 	sleeper := &fakeSleeper{}
-	postService := &fakePostService{recentIDs: map[string][]string{"partition-1": {}}}
+	postService := &fakePostService{recentIDs: map[string][]string{partition: {}}}
 	summarizer := &fakeSummarizer{
 		results: map[string][]summaryResult{
 			"post text": {
@@ -280,7 +269,6 @@ func TestRunOnceRetriesSummarization(t *testing.T) {
 		},
 		PostService: postService,
 		Summarizer:  summarizer,
-		Hasher:      &fakeHasher{values: map[string]string{feedURL: "partition-1"}},
 		Clock:       fakeClock{now: time.Now()},
 		Sleeper:     sleeper,
 	}.RunOnce(context.Background())
@@ -294,7 +282,8 @@ func TestRunOnceRetriesSummarization(t *testing.T) {
 
 func TestRunOnceUsesStableFallbackIDWhenFeedItemIDMissing(t *testing.T) {
 	feedURL := "https://example.com/feed"
-	postService := &fakePostService{recentIDs: map[string][]string{"partition-1": {}}}
+	partition := hasher.HashString(feedURL)
+	postService := &fakePostService{recentIDs: map[string][]string{partition: {}}}
 
 	err := Worker{
 		Settings: Settings{
@@ -311,14 +300,13 @@ func TestRunOnceUsesStableFallbackIDWhenFeedItemIDMissing(t *testing.T) {
 		Summarizer: &fakeSummarizer{
 			results: map[string][]summaryResult{"post text": {{text: "summary"}}},
 		},
-		Hasher:  &fakeHasher{values: map[string]string{feedURL: "partition-1"}},
 		Clock:   fakeClock{now: time.Now()},
 		Sleeper: &fakeSleeper{},
 	}.RunOnce(context.Background())
 
 	assert.NoError(t, err)
 	assert.Len(t, postService.saved, 1)
-	assert.Equal(t, "hash:partition-1\nhttps://example.com/post-1", postService.saved[0][0].ID)
+	assert.Equal(t, hasher.HashString(partition+"\nhttps://example.com/post-1"), postService.saved[0][0].ID)
 }
 
 func TestMapFeedItemUsesDescriptionWhenContentIsEmpty(t *testing.T) {
@@ -361,7 +349,6 @@ func TestRunOnceSkipsEmptyFeeds(t *testing.T) {
 		},
 		PostService: postService,
 		Summarizer:  &fakeSummarizer{},
-		Hasher:      &fakeHasher{values: map[string]string{feedURL: "partition-1"}},
 		Clock:       fakeClock{now: time.Now()},
 		Sleeper:     &fakeSleeper{},
 	}.RunOnce(context.Background())
@@ -378,11 +365,11 @@ func TestRunOnceContinuesAfterFetchLoadAndSaveErrors(t *testing.T) {
 	feedSuccess := "https://example.com/success"
 	postService := &fakePostService{
 		recentIDs: map[string][]string{
-			"save-partition":    {},
-			"success-partition": {},
+			hasher.HashString(feedWithSaveError): {},
+			hasher.HashString(feedSuccess):       {},
 		},
 		findErrs: map[string]error{
-			"load-partition": errors.New("load failed"),
+			hasher.HashString(feedWithLoadError): errors.New("load failed"),
 		},
 		saveErrs: []error{errors.New("save failed"), nil},
 	}
@@ -418,26 +405,21 @@ func TestRunOnceContinuesAfterFetchLoadAndSaveErrors(t *testing.T) {
 		},
 		PostService: postService,
 		Summarizer:  summarizer,
-		Hasher: &fakeHasher{values: map[string]string{
-			feedWithFetchError: "fetch-partition",
-			feedWithLoadError:  "load-partition",
-			feedWithSaveError:  "save-partition",
-			feedSuccess:        "success-partition",
-		}},
-		Clock:   fakeClock{now: time.Now()},
-		Sleeper: &fakeSleeper{},
+		Clock:       fakeClock{now: time.Now()},
+		Sleeper:     &fakeSleeper{},
 	}.RunOnce(context.Background())
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to save posts")
 	assert.Len(t, postService.saved, 2)
-	assert.Equal(t, "hash:save-partition\nsave-post", postService.saved[0][0].ID)
-	assert.Equal(t, "hash:success-partition\nsuccess-post", postService.saved[1][0].ID)
+	assert.Equal(t, hasher.HashString(hasher.HashString(feedWithSaveError)+"\nsave-post"), postService.saved[0][0].ID)
+	assert.Equal(t, hasher.HashString(hasher.HashString(feedSuccess)+"\nsuccess-post"), postService.saved[1][0].ID)
 }
 
 func TestRunOnceSkipsPostsWhenSummarizationFails(t *testing.T) {
 	feedURL := "https://example.com/feed"
-	postService := &fakePostService{recentIDs: map[string][]string{"partition-1": {}}}
+	partition := hasher.HashString(feedURL)
+	postService := &fakePostService{recentIDs: map[string][]string{partition: {}}}
 
 	err := Worker{
 		Settings: Settings{
@@ -460,7 +442,6 @@ func TestRunOnceSkipsPostsWhenSummarizationFails(t *testing.T) {
 				},
 			},
 		},
-		Hasher:  &fakeHasher{values: map[string]string{feedURL: "partition-1"}},
 		Clock:   fakeClock{now: time.Now()},
 		Sleeper: &fakeSleeper{},
 	}.RunOnce(context.Background())
@@ -472,7 +453,8 @@ func TestRunOnceSkipsPostsWhenSummarizationFails(t *testing.T) {
 
 func TestRunOnceSavesSuccessfulPostsWhenAnotherSummaryFails(t *testing.T) {
 	feedURL := "https://example.com/feed"
-	postService := &fakePostService{recentIDs: map[string][]string{"partition-1": {}}}
+	partition := hasher.HashString(feedURL)
+	postService := &fakePostService{recentIDs: map[string][]string{partition: {}}}
 
 	err := Worker{
 		Settings: Settings{
@@ -499,7 +481,6 @@ func TestRunOnceSavesSuccessfulPostsWhenAnotherSummaryFails(t *testing.T) {
 				"successful text": {{text: "successful summary"}},
 			},
 		},
-		Hasher:  &fakeHasher{values: map[string]string{feedURL: "partition-1"}},
 		Clock:   fakeClock{now: time.Now()},
 		Sleeper: &fakeSleeper{},
 	}.RunOnce(context.Background())
@@ -507,7 +488,7 @@ func TestRunOnceSavesSuccessfulPostsWhenAnotherSummaryFails(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to summarize post")
 	assert.Len(t, postService.saved, 1)
-	assert.Equal(t, "hash:partition-1\npost-2", postService.saved[0][0].ID)
+	assert.Equal(t, hasher.HashString(partition+"\npost-2"), postService.saved[0][0].ID)
 	assert.Equal(t, "successful summary", postService.saved[0][0].Text)
 }
 
@@ -540,7 +521,7 @@ func TestDistinctNewPosts(t *testing.T) {
 }
 
 func TestParseSettings(t *testing.T) {
-	withLookupIP(t, func(host string) ([]net.IP, error) {
+	withLookupIP(t, func(_ context.Context, host string) ([]net.IP, error) {
 		if host == "private.example.com" {
 			return []net.IP{net.ParseIP("10.0.0.1")}, nil
 		}
@@ -553,7 +534,7 @@ func TestParseSettings(t *testing.T) {
 		t.Setenv(config.EnvWorkerIntervalInSeconds, "60")
 		t.Setenv(config.EnvFeedItemsLimit, "5")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.NoError(t, err)
 		assert.Equal(t, 2, len(settings.RSSFeedsURLs))
@@ -570,7 +551,7 @@ func TestParseSettings(t *testing.T) {
 		t.Setenv(config.EnvWorkerIntervalInSeconds, "")
 		t.Setenv(config.EnvFeedItemsLimit, "")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.NoError(t, err)
 		assert.Equal(t, 1800, settings.WorkerTimeoutInSeconds)
@@ -581,7 +562,7 @@ func TestParseSettings(t *testing.T) {
 	t.Run("MissingFeeds", func(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -590,7 +571,7 @@ func TestParseSettings(t *testing.T) {
 	t.Run("EmptyFeedEntries", func(t *testing.T) {
 		t.Setenv(config.EnvFeeds, " , , ")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -599,7 +580,7 @@ func TestParseSettings(t *testing.T) {
 	t.Run("InvalidScheme", func(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "file:///tmp/feed.xml")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -608,7 +589,7 @@ func TestParseSettings(t *testing.T) {
 	t.Run("LocalhostFeed", func(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "http://localhost/feed")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -617,7 +598,7 @@ func TestParseSettings(t *testing.T) {
 	t.Run("PrivateIPFeed", func(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "http://192.168.1.10/feed")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -626,7 +607,7 @@ func TestParseSettings(t *testing.T) {
 	t.Run("PrivateDNSResolution", func(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "https://private.example.com/feed")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -639,7 +620,7 @@ func TestParseSettings(t *testing.T) {
 		}
 		t.Setenv(config.EnvFeeds, strings.Join(feeds, ","))
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -649,7 +630,7 @@ func TestParseSettings(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "http://example.com/feed")
 		t.Setenv(config.EnvWorkerTimeoutInSeconds, "0")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -659,7 +640,7 @@ func TestParseSettings(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "http://example.com/feed")
 		t.Setenv(config.EnvWorkerIntervalInSeconds, "-1")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
@@ -669,14 +650,14 @@ func TestParseSettings(t *testing.T) {
 		t.Setenv(config.EnvFeeds, "http://example.com/feed")
 		t.Setenv(config.EnvFeedItemsLimit, "0")
 
-		settings, err := ParseSettings()
+		settings, err := ParseSettingsContext(context.Background())
 
 		assert.Error(t, err)
 		assert.Nil(t, settings)
 	})
 }
 
-func withLookupIP(t *testing.T, fn func(string) ([]net.IP, error)) {
+func withLookupIP(t *testing.T, fn func(context.Context, string) ([]net.IP, error)) {
 	t.Helper()
 
 	original := lookupIP

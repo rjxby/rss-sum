@@ -5,16 +5,7 @@ import (
 	"encoding/hex"
 )
 
-type HasherProc struct {
-}
-
-func New() *HasherProc {
-	return &HasherProc{}
-}
-
-func (p HasherProc) HashString(s string) string {
-	h := sha256.New()
-	h.Write([]byte(s))
-	hashBytes := h.Sum(nil)
-	return hex.EncodeToString(hashBytes)
+func HashString(s string) string {
+	hash := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(hash[:])
 }

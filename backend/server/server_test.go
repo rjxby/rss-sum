@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -26,7 +27,7 @@ type MockBlogger struct {
 	mock.Mock
 }
 
-func (m *MockBlogger) ListPosts(page int, pageSize int, partitionKey string) (*blogger.PostsPage, error) {
+func (m *MockBlogger) ListPostsContext(_ context.Context, page int, pageSize int, partitionKey string) (*blogger.PostsPage, error) {
 	args := m.Called(page, pageSize, partitionKey)
 	return args.Get(0).(*blogger.PostsPage), args.Error(1)
 }
@@ -94,7 +95,7 @@ func TestGetPostsCtrl(t *testing.T) {
 			PartitionKey: "test-key",
 			Size:         2,
 		}
-		mockBlogger.On("ListPosts", 1, 10, "test-key").Return(expectedResult, nil)
+		mockBlogger.On("ListPostsContext", 1, 10, "test-key").Return(expectedResult, nil)
 
 		server := Server{
 			Blogger: mockBlogger,
@@ -174,7 +175,7 @@ func TestGetPostsCtrl(t *testing.T) {
 	t.Run("DatabaseError", func(t *testing.T) {
 		mockBlogger := new(MockBlogger)
 		expectedError := errors.New("database error")
-		mockBlogger.On("ListPosts", 1, 10, "").Return((*blogger.PostsPage)(nil), expectedError)
+		mockBlogger.On("ListPostsContext", 1, 10, "").Return((*blogger.PostsPage)(nil), expectedError)
 
 		server := Server{
 			Blogger: mockBlogger,
@@ -203,7 +204,7 @@ func TestGetPostsCtrl(t *testing.T) {
 	})
 }
 
-func TestGetPostsHtmxCtrlPreservesPartitionKeyInNextPageURL(t *testing.T) {
+func TestGetPostsCtrlPreservesPartitionKeyInHTMLNextPageURL(t *testing.T) {
 	mockBlogger := new(MockBlogger)
 	expectedResult := &blogger.PostsPage{
 		Posts: []blogger.Post{
@@ -214,7 +215,7 @@ func TestGetPostsHtmxCtrlPreservesPartitionKeyInNextPageURL(t *testing.T) {
 		PartitionKey: "feed-key",
 		Size:         11,
 	}
-	mockBlogger.On("ListPosts", 1, 10, "feed-key").Return(expectedResult, nil)
+	mockBlogger.On("ListPostsContext", 1, 10, "feed-key").Return(expectedResult, nil)
 
 	templateCache, err := NewTemplateCache()
 	assert.NoError(t, err)
@@ -228,7 +229,7 @@ func TestGetPostsHtmxCtrlPreservesPartitionKeyInNextPageURL(t *testing.T) {
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 
-	server.getPostsHtmxCtrl(rec, req)
+	server.getPostsCtrl(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `hx-get="/api/v1/posts?page=2&amp;pageSize=10&amp;partitionKey=feed-key"`)
@@ -269,21 +270,26 @@ func TestRoutesStaticAssets(t *testing.T) {
 	assert.Contains(t, rec.Header().Get("Content-Type"), "text/css")
 }
 
-func TestLoggerSanitizesRequestURIAndBody(t *testing.T) {
+func TestLoggerSanitizesRequestURIAndLeavesBodyUnread(t *testing.T) {
 	var logBuffer bytes.Buffer
 	logger := log.New(&logBuffer, "", 0)
-	handler := Logger(logger, LogBody)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Logger(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, "first\nsecond\tthird", string(body))
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest("POST", "/api/v1/posts?q=one%0Atwo", strings.NewReader("first\nsecond\tthird"))
+	req.URL.RawQuery = "q=one\ntwo"
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 
 	output := logBuffer.String()
-	assert.Contains(t, output, "/api/v1/posts?q=one%0Atwo")
-	assert.Contains(t, output, "first second third")
+	assert.Contains(t, output, "/api/v1/posts?q=one two")
+	assert.Contains(t, output, "200 (0)")
+	assert.NotContains(t, output, "first")
 	assert.NotContains(t, output, "one\ntwo")
 	assert.NotContains(t, output, "first\nsecond")
 	assert.Equal(t, 1, strings.Count(output, "\n"))
@@ -329,9 +335,9 @@ func TestRoutesSmokeWithTemporaryDatabase(t *testing.T) {
 }
 
 func TestRunReturnsServerStartupError(t *testing.T) {
-	listener, err := net.Listen("tcp", ":8080")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skipf("port 8080 is not available for startup error test: %v", err)
+		t.Fatalf("failed to allocate test listener: %v", err)
 	}
 	defer func() {
 		assert.NoError(t, listener.Close())
@@ -340,7 +346,7 @@ func TestRunReturnsServerStartupError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err = Server{Blogger: new(MockBlogger), Version: "test"}.Run(ctx)
+	err = Server{Blogger: new(MockBlogger), Version: "test", Addr: listener.Addr().String()}.Run(ctx)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "http server terminated")
