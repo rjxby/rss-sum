@@ -151,11 +151,12 @@ func TestPostsPaginationHtmxCountBounds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mockBlogger := new(MockBlogger)
-			mockBlogger.On("ListPosts", tc.page, tc.pageSize, "").Return(&blogger.PostsPage{Size: tc.size}, nil)
+			mockBlogger.On("ListPostsContext", tc.page, tc.pageSize, "").Return(&blogger.PostsPage{Size: tc.size}, nil)
 			server := Server{Blogger: mockBlogger, templateCache: cache}
 			request := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/posts?page=%d&pageSize=%d", tc.page, tc.pageSize), nil)
+			request.Header.Set("HX-Request", "true")
 			response := httptest.NewRecorder()
-			server.getPostsHtmxCtrl(response, request)
+			server.getPostsCtrl(response, request)
 			require.Equal(t, http.StatusOK, response.Code)
 			require.Equal(t, tc.hasMore, strings.Contains(response.Body.String(), "hx-get="))
 			mockBlogger.AssertExpectations(t)

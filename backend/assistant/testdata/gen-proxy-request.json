@@ -1,0 +1,38 @@
+{
+  "model": "contract-model",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "system constraint\n\narticle text"
+        }
+      ]
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "rss_summary",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "A concise summary of the source text."
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      }
+    }
+  },
+  "metadata": {
+    "source": "rss-sum"
+  }
+}

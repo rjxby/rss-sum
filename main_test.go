@@ -46,3 +46,22 @@ func TestRunApplicationNoServices(t *testing.T) {
 		t.Fatalf("expected successful completion without services, got %v", err)
 	}
 }
+
+func TestRunApplicationPreservesBothServiceFailures(t *testing.T) {
+	t.Setenv("FEEDS", "")
+	t.Setenv("DATABASE_PATH", filepath.Join(t.TempDir(), "rss-sum.sqlite"))
+	settings := &config.RuntimeSettings{
+		HTTPServerEnabled: true,
+		RSSWorkerEnabled:  true,
+		HTTPAddr:          "invalid-address",
+	}
+	err := runApplication(settings)
+	if err == nil {
+		t.Fatal("expected both service failures")
+	}
+	for _, failure := range []string{"worker failed: failed to parse worker settings", "FEEDS", "server failed: failed to run server", "missing port in address"} {
+		if !strings.Contains(err.Error(), failure) {
+			t.Errorf("missing %q in application error: %v", failure, err)
+		}
+	}
+}

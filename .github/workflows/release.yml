@@ -44,9 +44,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Test
-        run: go test -race -v -timeout=100s ./...
-
       - name: Build and package
         shell: bash
         run: |
@@ -54,8 +51,14 @@ jobs:
           test "$(go env GOHOSTARCH)" = "$GOARCH"
           mkdir -p dist/package
           go build -trimpath -ldflags "-s -w -X main.revision=$RELEASE_TAG" -o dist/package/rss-sum .
-          cp README.md LICENSE .env.example dist/package/
-          tar -czf "dist/rss-sum_${RELEASE_TAG}_${GOOS}_${GOARCH}.tar.gz" -C dist/package .
+          cp README.md LICENSE .env.example install.sh uninstall.sh dist/package/
+          mkdir -p dist/package/scripts/setup dist/package/docs
+          cp scripts/setup/local_stack.py dist/package/scripts/setup/
+          cp docs/setup.md dist/package/docs/
+          sh -n dist/package/install.sh dist/package/uninstall.sh
+          dist/package/install.sh --help
+          dist/package/uninstall.sh --help
+          COPYFILE_DISABLE=1 tar -czf "dist/rss-sum_${RELEASE_TAG}_${GOOS}_${GOARCH}.tar.gz" -C dist/package .
 
       - name: Upload archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

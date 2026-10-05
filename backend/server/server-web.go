@@ -25,8 +25,6 @@ type postsView struct {
 	Posts       []postView
 	FirstPage   bool
 	HasMore     bool
-	NextPage    int
-	PageSize    int
 	NextPageURL string
 }
 
@@ -100,6 +98,7 @@ func (s *Server) render(w http.ResponseWriter, status int, page string, data tem
 		return
 	}
 
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, err = buf.WriteTo(w)
 	if err != nil {
@@ -117,31 +116,17 @@ func (s *Server) indexCtrl(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, clientTmplName, data)
 }
 
-func (s *Server) getPostsHtmxCtrl(w http.ResponseWriter, r *http.Request) {
-	postsQuery, err := parsePostsQuery(r)
-	if err != nil {
-		renderBadRequest(w, r, "invalid posts query", err)
-		return
-	}
-
-	posts, err := s.Blogger.ListPosts(postsQuery.Page, postsQuery.PageSize, postsQuery.PartitionKey)
-	if err != nil {
-		renderInternalServerError(w, r, "failed to load posts", err)
-		return
-	}
-
-	nextPage, canAdvance := postsQuery.nextPage()
-	hasMore := canAdvance && posts.Size > 0 && int64(postsQuery.Page) <= (posts.Size-1)/int64(postsQuery.PageSize)
+func (s *Server) renderPostsHTML(w http.ResponseWriter, query postsQuery, posts *blogger.PostsPage) {
+	nextPageURL := postsNextPageURL(query)
+	hasMore := nextPageURL != "" && posts.Size > 0 && int64(query.Page) <= (posts.Size-1)/int64(query.PageSize)
 
 	data := templateData{
 		Version: s.Version,
 		View: postsView{
 			Posts:       mapPostViews(posts.Posts),
-			FirstPage:   postsQuery.Page == 1,
+			FirstPage:   query.Page == 1,
 			HasMore:     hasMore,
-			NextPage:    nextPage,
-			PageSize:    postsQuery.PageSize,
-			NextPageURL: postsNextPageURL(postsQuery),
+			NextPageURL: nextPageURL,
 		},
 	}
 

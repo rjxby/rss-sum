@@ -22,15 +22,20 @@ type PostJSON struct {
 }
 
 func (s Server) getPostsCtrl(w http.ResponseWriter, r *http.Request) {
-	postsQuery, err := parsePostsQuery(r)
+	query, err := parsePostsQuery(r)
 	if err != nil {
 		renderBadRequest(w, r, "invalid posts query", err)
 		return
 	}
 
-	posts, err := s.Blogger.ListPosts(postsQuery.Page, postsQuery.PageSize, postsQuery.PartitionKey)
+	posts, err := s.Blogger.ListPostsContext(r.Context(), query.Page, query.PageSize, query.PartitionKey)
 	if err != nil {
 		renderInternalServerError(w, r, "failed to load posts", err)
+		return
+	}
+
+	if r.Header.Get("HX-Request") == "true" {
+		s.renderPostsHTML(w, query, posts)
 		return
 	}
 

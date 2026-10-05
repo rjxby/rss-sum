@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -89,12 +90,12 @@ func TestGetPostsSuccess(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	allPosts, err := database.GetPosts(1, 10, "")
+	allPosts, err := database.GetPostsContext(context.Background(), 1, 10, "")
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), allPosts.Size)
 	assert.Len(t, allPosts.Posts, 2)
 
-	filteredPosts, err := database.GetPosts(1, 10, "feed-a")
+	filteredPosts, err := database.GetPostsContext(context.Background(), 1, 10, "feed-a")
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1), filteredPosts.Size)
 	assert.Len(t, filteredPosts.Posts, 1)
@@ -136,7 +137,7 @@ func TestGetPostsOrdersByNewestThenID(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	result, err := database.GetPosts(1, 10, "feed-a")
+	result, err := database.GetPostsContext(context.Background(), 1, 10, "feed-a")
 
 	assert.NoError(t, err)
 	if assert.Len(t, result.Posts, 3) {
@@ -154,7 +155,7 @@ func TestGetPostsReturnsEmptySliceWhenNoRows(t *testing.T) {
 		assert.NoError(t, database.Close())
 	}()
 
-	result, err := database.GetPosts(1, 10, "")
+	result, err := database.GetPostsContext(context.Background(), 1, 10, "")
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(0), result.Size)
@@ -166,7 +167,7 @@ func TestGetPostsReturnsCountError(t *testing.T) {
 	database := newTestDatabase(t)
 	assert.NoError(t, database.Close())
 
-	result, err := database.GetPosts(1, 10, "")
+	result, err := database.GetPostsContext(context.Background(), 1, 10, "")
 
 	assert.Error(t, err)
 	assert.Nil(t, result)
@@ -189,7 +190,7 @@ func TestGetPostsReturnsFindError(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	result, err := database.GetPosts(1, 10, "")
+	result, err := database.GetPostsContext(context.Background(), 1, 10, "")
 
 	assert.Error(t, err)
 	assert.Nil(t, result)

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="htmx-config" content='{"noSwap":[204,304,"4xx","5xx"],"includeIndicatorCSS":false}'>
     <title>RSS Sum</title>
+    <script src="/static/wall.js"></script>
     <link rel="stylesheet" href="/static/app.css">
     <script src="/static/app.js" defer></script>
     <script src="/static/htmx.min.js" defer></script>
@@ -18,15 +19,25 @@
                     <circle cx="5" cy="19" r="1" fill="currentColor" stroke="none" />
                     <path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16" />
                 </svg>
-                RSS Sum
+                <span class="reading-brand">RSS Sum</span>
+                <span class="wall-brand" hidden>THE WIRE<span aria-hidden="true">_</span></span>
             </a>
             <span class="site-description">A digest of your feeds</span>
+            <div class="display-controls">
+                <button type="button" id="display-toggle" aria-pressed="false" hidden>Wall digest</button>
+                <button type="button" id="display-contrast" aria-pressed="false" hidden>E-ink</button>
+            </div>
         </header>
 
         <section class="introduction" aria-labelledby="page-title">
             <p class="eyebrow">Your feeds, condensed</p>
             <h1 id="page-title">A little less scrolling.<br>A little more reading.</h1>
             <p class="introduction-text">Short summaries. Follow a story back to its source.</p>
+        </section>
+
+        <section id="wall-digest" aria-label="Wall digest" aria-busy="false" hidden>
+            <div id="wall-stories"></div>
+            <p id="wall-message" role="status">Loading articles...</p>
         </section>
 
         <h2 class="section-heading" id="latest-articles">Latest articles</h2>
@@ -45,6 +56,7 @@
 
         <footer class="site-footer">
             <p>RSS Sum <span aria-hidden="true">·</span> {{ .Version }}</p>
+            <p id="wall-edition" role="status" hidden></p>
         </footer>
     </main>
 </body>

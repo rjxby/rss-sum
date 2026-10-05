@@ -16,7 +16,7 @@ See [Claude Code's AGENTS.md documentation](https://code.claude.com/docs/en/memo
 
 - `main.go` starts migration, HTTP serving, and the RSS worker.
 - `backend/config/` parses environment settings and loads the optional `.env` file.
-- `backend/assistant/` contains summary prompts in `assistant.go`, provider selection in `provider_factory.go`, and request/response handling in `ollama.go` and `gen_proxy.go`.
+- `backend/assistant/` contains summary prompts and settings in `assistant.go`, generation contracts in `generation.go`, and gen-proxy request/response handling in `gen_proxy.go`.
 - `backend/rss/worker/` fetches feeds, filters duplicate items, summarizes new items, and saves them.
 - `backend/blogger/` maps application posts to persistence operations.
 - `backend/store/` owns SQLite/GORM models and queries.
@@ -64,18 +64,18 @@ The app is configured through environment variables. The most important ones are
 - `FEED_ITEMS_LIMIT`
 - `WORKER_TIMEOUT_IN_SECONDS`
 - `WORKER_INTERVAL_IN_SECONDS`
-- `LLM_PROVIDER`
 - `LLM_SYSTEM_PROMPT_FILE`
 
-Provider-specific settings:
+Gen-proxy settings:
 
-- Ollama: `OLLAMA_HOST`, `OLLAMA_PORT`, `OLLAMA_SCHEME`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_IN_SECONDS`
 - gen-proxy: `GEN_PROXY_BASE_URL`, `GEN_PROXY_MODEL`, `GEN_PROXY_API_KEY`, `GEN_PROXY_TIMEOUT_IN_SECONDS`
 
 ## Constraints
 
+- Before implementing, briefly outline the simplest approach that solves the task with the least code and the fewest changes. Look for existing code to reuse or simplify.
+- Prefer less code and smaller changes while preserving correctness, readability, and required verification. Avoid unrelated edits and abstractions the task does not need.
 - Keep documentation direct and factual.
-- Keep comments for non-obvious constraints or decisions; avoid narrating code and assertions.
+- Do not add comments that restate code, describe obvious steps, narrate assertions, or duplicate documentation. Add comments only for non-obvious constraints or decisions, and preserve required directives and public API contracts.
 - Document each contract once and link to it from other docs.
 - Update README configuration guidance when adding or changing environment variables.
 - Prefer direct Go commands for local work.
@@ -83,3 +83,15 @@ Provider-specific settings:
 - Persistence is SQLite through GORM; keep store changes behind `backend/store` and application mapping behind `backend/blogger`.
 - Feed URL validation blocks local/private destinations. Preserve that boundary when changing RSS fetch behavior.
 - LLM providers must return structured JSON with a `summary` field.
+
+## Quality gates
+
+- Use `make verify-fast` for formatting, vet, Go tests, architecture rules, and frontend tests. Narrow the Go tests with `GO_PACKAGES='./backend/assistant' GO_TEST_FILTER='TestName'`. Empty or all-skipped selections fail the command.
+- Use `make verify` for final verification, including race detection, vulnerability checks, and lint. It requires installed govulncheck and golangci-lint tools.
+- For server, template, CSS, or browser JavaScript changes, run `make verify-e2e` during development. It also runs in `make verify`. See [browser verification](docs/e2e.md) for setup, coverage, and failure artifacts.
+- Add a browser regression test when a bug depends on browser behavior. Report the scenarios tested and link failure artifacts. If E2E cannot run, state the blocker and what remains unverified.
+- Architecture rules live in quality/architecture_test.go and protect the package ownership described in docs/architecture.md.
+- `make fuzz-summary` explores provider-output parsing for ten seconds. The seed corpus runs during ordinary Go tests without making provider calls.
+- For bug fixes, demonstrate a failing regression test before the fix where possible. Explain fixture changes, skipped tests, analyzer suppressions, and weakened assertions.
+- Keep live summary quality evals separate from unit tests. Compare factual retention, unsupported claims, and output validity using pinned model hashes, prompts, and provider settings. Generated wording alone is not a stable fixture.
+- Use synchronization signals for concurrency tests. Timeouts bound hangs; sleeps do not establish ordering.

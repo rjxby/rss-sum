@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"github.com/rjxby/rss-sum/backend/assistant"
 	"github.com/rjxby/rss-sum/backend/blogger"
 	"github.com/rjxby/rss-sum/backend/config"
-	"github.com/rjxby/rss-sum/backend/hasher"
 	"github.com/rjxby/rss-sum/backend/rss/worker"
 	"github.com/rjxby/rss-sum/backend/server"
 	"github.com/rjxby/rss-sum/backend/store"
@@ -55,7 +55,7 @@ func runApplication(settings *config.RuntimeSettings) error {
 		go func() {
 			defer wg.Done()
 			if err := runServer(ctx, settings.HTTPAddr); err != nil {
-				errCh <- fmt.Errorf("server failed: %v", err)
+				errCh <- fmt.Errorf("server failed: %w", err)
 			}
 		}()
 	}
@@ -65,7 +65,7 @@ func runApplication(settings *config.RuntimeSettings) error {
 		go func() {
 			defer wg.Done()
 			if err := runWorker(ctx); err != nil {
-				errCh <- fmt.Errorf("worker failed: %v", err)
+				errCh <- fmt.Errorf("worker failed: %w", err)
 			}
 		}()
 	}
@@ -89,12 +89,9 @@ func runApplication(settings *config.RuntimeSettings) error {
 	cancel()
 	<-doneCh
 
-	// All service errors are queued before completion, even if a signal or doneCh won the select.
-	if err == nil {
-		select {
-		case err = <-errCh:
-		default:
-		}
+	close(errCh)
+	for serviceErr := range errCh {
+		err = errors.Join(err, serviceErr)
 	}
 	return err
 }
@@ -135,15 +132,18 @@ func runServer(ctx context.Context, httpAddr string) error {
 	}
 
 	if err := srv.Run(ctx); err != nil {
-		return fmt.Errorf("failed to run server: %v", err)
+		return fmt.Errorf("failed to run server: %w", err)
 	}
 	return nil
 }
 
 func runWorker(ctx context.Context) error {
-	workerSettings, err := worker.ParseSettings()
+	workerSettings, err := worker.ParseSettingsContext(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to parse worker settings: %v", err)
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil
+		}
+		return fmt.Errorf("failed to parse worker settings: %w", err)
 	}
 
 	assistantSettings, err := assistant.ParseSettings()
@@ -165,8 +165,6 @@ func runWorker(ctx context.Context) error {
 		Settings:    *workerSettings,
 		Summarizer:  assistant.New(assistantSettings),
 		PostService: blogger.New(dataStore),
-		Hasher:      hasher.New(),
-		Version:     revision,
 	}
 
 	if err := worker.Run(ctx); err != nil {
